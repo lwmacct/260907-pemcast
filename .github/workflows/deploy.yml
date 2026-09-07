@@ -1,0 +1,44 @@
+name: deploy
+run-name: deploy ${{ inputs.source-tag }}
+
+on:
+  workflow_call:
+    inputs:
+      source-tag: &source-tag-input
+        description: Image tag to deploy.
+        required: true
+        type: string
+    secrets:
+      DEPLOY_SSH_PRIVATE:
+        required: true
+
+  workflow_dispatch:
+    inputs:
+      source-tag: *source-tag-input
+
+jobs:
+  deploy:
+    runs-on: ubuntu-slim
+    steps:
+      - name: Prepare drone-ssh
+        id: drone-ssh
+        uses: lwmacct/260706-action-gh-release@main
+        with:
+          repository: appleboy/drone-ssh
+          tag: v1.8.2
+          asset: drone-ssh-1.8.2-linux-amd64
+          checksum: sha256:1e10a9972eef167d9ddbc39e1ba80f7d44a011b4a6bc4f6149434154d9b6bb24
+          cache: "true"
+
+      - name: Execute remote SSH command
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          DRONE_SSH_RELEASE_URL: ${{ steps.drone-ssh.outputs.release-download-url }}
+          DOCKER_IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.source-tag }}
+        with:
+          host: ${{ vars.DEPLOY_SSH_HOST }}
+          port: ${{ vars.DEPLOY_SSH_PORT }}
+          username: ${{ vars.DEPLOY_SSH_USERNAME }}
+          key: ${{ secrets.DEPLOY_SSH_PRIVATE }}
+          envs: DOCKER_IMAGE
+          script: bash ${{ vars.DEPLOY_SCRIPT }}

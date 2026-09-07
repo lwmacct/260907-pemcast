@@ -1,0 +1,35 @@
+name: release
+run-name: release ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to dispatch.
+        required: true
+        type: string
+      sha:
+        description: Optional commit SHA that the release tag must point to.
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-slim
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch main-scoped publish
+        uses: lwmacct/260707-action-workflow-dispatch@main
+        with:
+          workflow: publish.yml
+          source-tag: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          source-sha: ${{ github.event_name == 'push' && github.sha || inputs.sha }}
