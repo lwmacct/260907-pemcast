@@ -1,0 +1,72 @@
+# 默认配置示例文件, 此文件由单元测试生成, 请勿直接修改
+# 复制此文件为 config.yaml 并根据需要修改
+
+# pemcast agent configuration
+agent:
+  once: false # synchronize once and exit
+  dry-run: false # validate changes without writing files or running hooks
+  state-dir: "/var/lib/pemcast" # local state and lock directory
+  max-concurrent: 4 # maximum targets reconciled concurrently
+
+  # etcd client configuration
+  etcd:
+
+    # etcd endpoint URLs
+    endpoints:
+      - http://127.0.0.1:2379
+    username: "" # etcd username
+    password: "" # etcd password
+    dial-timeout: 5s # etcd connection timeout
+    request-timeout: 10s # timeout for an etcd read
+
+    # etcd TLS client configuration
+    tls:
+      ca-file: "" # PEM CA bundle used to verify etcd
+      cert-file: "" # PEM client certificate used for etcd mTLS
+      key-file: "" # PEM client private key used for etcd mTLS
+      server-name: "" # expected etcd TLS server name
+      insecure-skip-verify: false # skip etcd TLS server verification (unsafe)
+
+  # etcd watch and retry configuration
+  watch:
+    root-prefix: "/pemcast/v1" # root key prefix for the pemcast/v1 protocol
+    resync-interval: 10m0s # periodic full reconciliation interval, zero disables it
+    retry-min: 1s # minimum retry delay
+    retry-max: 30s # maximum retry delay
+    jitter-ratio: 0.2 # random retry jitter ratio from zero to one
+
+  # certificate synchronization targets
+  targets:
+    - id: "nginx" # target identifier and remote active-pointer name
+      delete-policy: "retain" # action when the active pointer is deleted: retain or fail
+
+      # local release directory configuration
+      output:
+        root: "/etc/nginx/tls" # local certificate root directory
+        current-link: "current" # relative symlink selecting the active release
+        retain-releases: 3 # number of inactive releases retained locally
+        directory-mode: "0700" # octal mode for managed directories
+
+        # remote bundle file to local file mappings
+        mappings:
+          - remote: "fullchain.pem" # file name in the remote bundle
+            local: "fullchain.pem" # relative path inside each local release
+            mode: "0644" # octal file mode
+          - remote: "privkey.pem" # file name in the remote bundle
+            local: "privkey.pem" # relative path inside each local release
+            mode: "0600" # octal file mode
+
+      # TLS material validation configuration
+      validation:
+        certificate: "fullchain.pem" # remote certificate file to validate
+        private-key: "privkey.pem" # remote private key file to validate
+        reject-expired: true # reject an expired leaf certificate
+        minimum-validity: 1h0m0s # minimum required remaining leaf validity
+
+      # post-activation hook configuration
+      hook:
+        path: "/etc/pemcast/hooks/reload-nginx" # post-activation executable path
+
+        # post-activation executable arguments
+        args: []
+        timeout: 30s # hook execution timeout
