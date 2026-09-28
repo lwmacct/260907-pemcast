@@ -1,0 +1,3 @@
+interface:
+  display_name: "repo 部署"
+  short_description: "配置 agent, 发布证书 bundle, 诊断同步与 hook"

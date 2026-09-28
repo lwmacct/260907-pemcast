@@ -1,0 +1,3 @@
+interface:
+  display_name: "repo 架构"
+  short_description: "理解或修改 pemcast 的数据流与安全不变量"
