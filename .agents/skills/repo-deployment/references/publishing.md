@@ -1,6 +1,6 @@
 # 发布 pemcast v2 bundle
 
-v2 协议固定使用 `/pemcast/v2`, 不做 v1 兼容或迁移:
+协议固定使用 `/pemcast/v2`:
 
 ```text
 /pemcast/v2/active/nginx = sha256-<bundle-digest>
@@ -123,4 +123,3 @@ pemcast --config /etc/pemcast/config.yaml status --json
 - 不用 etcdctl 常规写入 v2 数据.
 - plan 文件权限应为 0600, 因为它暴露证书路径和 digest 元数据.
 - 远端历史 bundle 清理由独立运维策略负责, 必须永远保留 active generation.
-- v1 数据不能被 v2 agent 消费; 需要重新用 v2 publisher 发布.

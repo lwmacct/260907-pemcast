@@ -4,7 +4,7 @@
 
 pemcast 是一个 pull-only certificate agent. publisher 从证书内容计算 content-addressed generation, 在一个 etcd transaction 中提交完整单 key bundle 和 active pointer. agent 监听 pointer, 按事件 revision 读取 bundle, 在本地物化 immutable release, 并切换稳定 symlink. 服务重载交给可信 hook.
 
-仓库提供 `publish plan/apply/activate` CLI, 但不包含 lease manager, service-control integration, HTTP API 或 v1 迁移.
+仓库提供 `publish plan/apply/activate` CLI, 但不包含 lease manager, service-control integration 或 HTTP API.
 
 ## 运行流程
 
@@ -180,4 +180,4 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/publisher`: publish plan, atomic apply 和 activate 状态机.
 - `internal/status`: 只读本地 target 状态.
 
-已知边界: snapshot/watch 与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责, v1 数据不做迁移.
+已知边界: snapshot/watch 与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.

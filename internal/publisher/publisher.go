@@ -13,7 +13,7 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
 )
 
-const PlanSchema = "pemcast-publish/v1"
+const PlanSchema = "pemcast-publish/v2"
 
 const (
 	certificateName = "fullchain.pem"

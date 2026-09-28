@@ -1,3 +1,3 @@
 interface:
   display_name: "repo 开发"
-  short_description: "修改 Go 实现, 补齐测试并保持协议兼容"
+  short_description: "修改 Go 实现, 补齐测试并保持 v2 协议稳定"

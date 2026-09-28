@@ -38,7 +38,7 @@ pemcast config example > config/config.yaml
 pemcast --config config/config.yaml config validate
 ```
 
-v2 协议固定使用 `/pemcast/v2`, 不提供 v1 迁移. 以 target `nginx` 为例:
+协议固定使用 `/pemcast/v2`. 以 target `nginx` 为例:
 
 ```text
 /pemcast/v2/active/nginx = sha256-<bundle-digest>
