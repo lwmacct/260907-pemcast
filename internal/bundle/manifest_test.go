@@ -26,6 +26,24 @@ func TestParseManifestRejectsTraversalAndUnknownFields(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestParseManifestRejectsInvalidAndMismatchedKinds(t *testing.T) {
+	sum := sha256.Sum256(nil)
+	valid := hex.EncodeToString(sum[:])
+	manifest := `{"schema":"pemcast/v1","files":[` +
+		`{"name":"cert.pem","kind":"chain","sha256":"` + valid + `"},` +
+		`{"name":"key.pem","kind":"private-key","sha256":"` + valid + `"}],` +
+		`"pairs":[{"certificate":"cert.pem","private-key":"key.pem"}]}`
+	_, err := ParseManifest([]byte(manifest))
+	require.ErrorContains(t, err, "invalid kind")
+
+	manifest = `{"schema":"pemcast/v1","files":[` +
+		`{"name":"cert.pem","kind":"certificate","sha256":"` + valid + `"},` +
+		`{"name":"key.pem","kind":"private-key","sha256":"` + valid + `"}],` +
+		`"pairs":[{"certificate":"key.pem","private-key":"cert.pem"}]}`
+	_, err = ParseManifest([]byte(manifest))
+	require.ErrorContains(t, err, "mismatched file kinds")
+}
+
 func TestVerifyFilesDetectsDigestMismatch(t *testing.T) {
 	manifest := Manifest{
 		Schema: SchemaV1,

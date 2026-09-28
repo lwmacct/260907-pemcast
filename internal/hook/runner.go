@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/lwmacct/260907-pemcast/internal/config"
@@ -47,30 +50,95 @@ func (r *Runner) Run(ctx context.Context, cfg config.Hook, event Event) error {
 		return fmt.Errorf("encode hook event: %w", err)
 	}
 	command := exec.CommandContext(hookCtx, cfg.Path, cfg.Args...) //nolint:gosec // Executable is trusted local operator configuration.
-	command.Env = append(os.Environ(),
-		"PEMCAST_TARGET="+event.TargetID,
-		"PEMCAST_GENERATION="+event.Generation,
-		"PEMCAST_PREVIOUS_GENERATION="+event.PreviousGeneration,
-		"PEMCAST_ETCD_REVISION="+strconv.FormatInt(event.EtcdRevision, 10),
-		"PEMCAST_RELEASE_DIR="+event.ReleaseDir,
-		"PEMCAST_CURRENT_DIR="+event.CurrentDir,
-		"PEMCAST_CHANGED_FILES="+strings.Join(event.ChangedFiles, ","),
-		"PEMCAST_BUNDLE_SHA256="+event.BundleSHA256,
-	)
+	command.Env = hookEnvironment(cfg.PassEnvironment, event)
 	command.Stdin = strings.NewReader(string(payload) + "\n")
-	output, err := command.CombinedOutput()
-	if err != nil {
+	output := newLimitedBuffer(4096)
+	command.Stdout = output
+	command.Stderr = output
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { return killProcessGroup(command) }
+	command.WaitDelay = 100 * time.Millisecond
+	runErr := command.Run()
+	if runErr != nil {
 		if hookCtx.Err() != nil {
-			return fmt.Errorf("hook timed out or was canceled: %w", hookCtx.Err())
+			return fmt.Errorf("hook timed out or was canceled: %w: %s", hookCtx.Err(), output.truncatedString())
 		}
-		return fmt.Errorf("hook failed: %w: %s", err, truncate(output, 4096))
+		return fmt.Errorf("hook failed: %w: %s", runErr, output.truncatedString())
 	}
 	return nil
 }
 
-func truncate(value []byte, limit int) string {
-	if len(value) > limit {
-		value = value[:limit]
+func killProcessGroup(command *exec.Cmd) error {
+	if command.Process == nil {
+		return nil
 	}
-	return strings.TrimSpace(string(value))
+	return syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+}
+
+func hookEnvironment(pass []string, event Event) []string {
+	values := map[string]string{
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+	for _, name := range pass {
+		if value, exists := os.LookupEnv(name); exists {
+			values[name] = value
+		}
+	}
+	values["PEMCAST_TARGET"] = event.TargetID
+	values["PEMCAST_GENERATION"] = event.Generation
+	values["PEMCAST_PREVIOUS_GENERATION"] = event.PreviousGeneration
+	values["PEMCAST_ETCD_REVISION"] = strconv.FormatInt(event.EtcdRevision, 10)
+	values["PEMCAST_RELEASE_DIR"] = event.ReleaseDir
+	values["PEMCAST_CURRENT_DIR"] = event.CurrentDir
+	values["PEMCAST_CHANGED_FILES"] = strings.Join(event.ChangedFiles, ",")
+	values["PEMCAST_BUNDLE_SHA256"] = event.BundleSHA256
+
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	environment := make([]string, 0, len(names))
+	for _, name := range names {
+		environment = append(environment, name+"="+values[name])
+	}
+	return environment
+}
+
+type limitedBuffer struct {
+	mu        sync.Mutex
+	data      []byte
+	limit     int
+	truncated bool
+}
+
+func newLimitedBuffer(limit int) *limitedBuffer {
+	return &limitedBuffer{limit: limit}
+}
+
+func (b *limitedBuffer) Write(chunk []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	remaining := b.limit - len(b.data)
+	if remaining <= 0 {
+		b.truncated = true
+		return len(chunk), nil
+	}
+	if len(chunk) > remaining {
+		b.data = append(b.data, chunk[:remaining]...)
+		b.truncated = true
+	} else {
+		b.data = append(b.data, chunk...)
+	}
+	return len(chunk), nil
+}
+
+func (b *limitedBuffer) truncatedString() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	value := strings.TrimSpace(string(b.data))
+	if b.truncated {
+		value += "\n[output truncated]"
+	}
+	return value
 }

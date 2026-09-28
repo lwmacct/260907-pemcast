@@ -23,13 +23,29 @@ type Source interface {
 	FetchBundle(context.Context, string, string, int64) (*bundle.Material, error)
 }
 
+// Deployer activates verified material below one configured output root.
+type Deployer interface {
+	Activate(*bundle.Material, config.Output) (deploy.Result, error)
+}
+
+// HookRunner invokes one configured post-activation hook.
+type HookRunner interface {
+	Run(context.Context, config.Hook, hook.Event) error
+}
+
+// StateStore persists the last reconciliation state for each target.
+type StateStore interface {
+	Load(targetID string) (state.Target, error)
+	Save(targetID string, target state.Target) error
+}
+
 // Controller reconciles configured targets. Each target is serialized while
 // different targets may execute concurrently.
 type Controller struct {
 	source    Source
-	deployer  *deploy.Deployer
-	hooks     *hook.Runner
-	state     *state.Store
+	deployer  Deployer
+	hooks     HookRunner
+	state     StateStore
 	targets   map[string]config.Target
 	dryRun    bool
 	semaphore chan struct{}
@@ -37,7 +53,7 @@ type Controller struct {
 	logger    *slog.Logger
 }
 
-func New(source Source, deployer *deploy.Deployer, hooks *hook.Runner, store *state.Store, cfg config.Agent, logger *slog.Logger) *Controller {
+func New(source Source, deployer Deployer, hooks HookRunner, store StateStore, cfg config.Agent, logger *slog.Logger) *Controller {
 	targets := make(map[string]config.Target, len(cfg.Targets))
 	for _, target := range cfg.Targets {
 		targets[target.ID] = target
@@ -96,13 +112,13 @@ func (c *Controller) Reconcile(ctx context.Context, id, generation string, revis
 	if !material.Manifest.HasPair(target.Validation.Certificate, target.Validation.PrivateKey) {
 		return fmt.Errorf("target %q certificate/private-key pair is not declared by the manifest", id)
 	}
-	previous, err := c.state.Load(id)
-	if err != nil {
-		return err
-	}
 	if c.dryRun {
 		c.logger.InfoContext(ctx, "bundle validated in dry-run mode", "target", id, "generation", generation, "digest", material.Digest)
 		return nil
+	}
+	previous, err := c.state.Load(id)
+	if err != nil {
+		return err
 	}
 	result, err := c.deployer.Activate(material, target.Output)
 	if err != nil {

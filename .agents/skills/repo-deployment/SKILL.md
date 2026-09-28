@@ -1,6 +1,6 @@
 ---
 name: repo-deployment
-description: "配置和运行 pemcast, 发布或回滚 etcd certificate bundle, 执行 dry-run 校验, 诊断启用或 reload-hook 失败. 不用于内部实现修改."
+description: "配置和运行 pemcast, 用 publisher 发布或回滚 etcd certificate bundle, 执行 dry-run 校验, 查看本地状态, 诊断启用或 reload-hook 失败. 不用于内部实现修改."
 ---
 
 # pemcast 部署

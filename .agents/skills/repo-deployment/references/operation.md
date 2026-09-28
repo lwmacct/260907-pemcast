@@ -18,7 +18,7 @@ PEMCAST_AGENT_TARGETS='[{"id":"nginx",...}]'
 
 scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
-配置 etcd 访问, 每个消费者一个 target, output root, 安全 mappings, validation pair 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 每个 output root 或 target set 只运行一个进程.
+配置 etcd 访问, 每个消费者一个 target, output root, 安全 mappings, validation pair 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
 
 ## 校验与启动
 
@@ -60,9 +60,12 @@ PEMCAST_BUNDLE_SHA256
 
 stdin 中的 JSON 使用 `target-id`, `generation`, `previous-generation`, `etcd-revision`, `release-dir`, `current-dir`, `changed-files`, `bundle-sha256` 和 `activated-at` 字段. hook 在启用后运行, 必须幂等.
 
+hook 默认只获得固定 `PATH` 和 `PEMCAST_*` 变量. `hook.pass-environment` 是显式放行的现有环境变量名列表. hook 输出收集上限为 4096 bytes, timeout 会终止整个 process group.
+
 ## 诊断
 
 ```bash
+pemcast --config /etc/pemcast/config.yaml status --json
 readlink -f /etc/nginx/tls/current
 cat /etc/nginx/tls/current/.pemcast-digest
 stat -c '%a %U:%G %n' /etc/nginx/tls/current/privkey.pem
@@ -73,9 +76,10 @@ cat /var/lib/pemcast/nginx.json | jq .
 
 - etcd connect/read/watch: endpoint, authentication, TLS 或 compaction;
 - fetch/hash/manifest/TLS validity: 远端 bundle 畸形或不完整;
-- deploy: output 权限或文件系统失败;
+- lock: 同一个 output root 已有 agent 进程;
+- deploy: output 权限, release 完整性或文件系统失败;
 - hook timeout/nonzero: executable, authorization 或下游服务失败.
 
 回滚时把 active pointer 移回一个完整的旧 generation. 需要时 pemcast 会重建已被 prune 的本地 release. 删除 pointer 永远不会删除本地文件: `retain` 继续提供服务, `fail` 报告删除.
 
-手工恢复前先停止唯一的 agent, 修复完整 release 和 symlink, 再重启并对目标 generation 执行 dry-run. 正常运行期间不要编辑 `.pemcast` 内部结构.
+手工恢复前先停止持有 `agent.lock` 的 agent, 修复完整 release 和 symlink, 再重启并对目标 generation 执行 dry-run. 正常运行期间不要编辑 `.pemcast` 内部结构.

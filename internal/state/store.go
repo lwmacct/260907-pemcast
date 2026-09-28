@@ -20,17 +20,23 @@ type Target struct {
 	HookError   string    `json:"hook-error"`
 }
 
-// Store owns state files below one private directory.
+// Store owns state files below one private directory. Directory creation is
+// lazy so validation-only modes can inspect configuration without writing.
 type Store struct{ dir string }
 
 func New(dir string) (*Store, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("state directory must be absolute")
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create state directory: %w", err)
-	}
 	return &Store{dir: dir}, nil
+}
+
+// Ensure creates the private state directory when it is needed.
+func (s *Store) Ensure() error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) Load(targetID string) (Target, error) {
@@ -48,7 +54,23 @@ func (s *Store) Load(targetID string) (Target, error) {
 	return target, nil
 }
 
+// Exists reports whether a target has persisted state. It never creates the
+// state directory or target file.
+func (s *Store) Exists(targetID string) (bool, error) {
+	_, err := os.Stat(s.path(targetID))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat target state: %w", err)
+	}
+	return true, nil
+}
+
 func (s *Store) Save(targetID string, target Target) error {
+	if err := s.Ensure(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(target)
 	if err != nil {
 		return fmt.Errorf("encode target state: %w", err)

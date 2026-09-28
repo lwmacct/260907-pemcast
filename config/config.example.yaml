@@ -5,7 +5,7 @@
 agent:
   once: false # synchronize once and exit
   dry-run: false # validate changes without writing files or running hooks
-  state-dir: "/var/lib/pemcast" # local state and lock directory
+  state-dir: "/var/lib/pemcast" # local target state directory
   max-concurrent: 4 # maximum targets reconciled concurrently
 
   # etcd client configuration
@@ -70,3 +70,6 @@ agent:
         # post-activation executable arguments
         args: []
         timeout: 30s # hook execution timeout
+
+        # existing environment variable names explicitly passed to the hook
+        pass-environment: []

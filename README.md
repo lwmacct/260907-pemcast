@@ -1,6 +1,6 @@
 # pemcast
 
-pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent. 发布者先把完整的证书 generation 写入 etcd, 再切换 active 指针; pemcast 监听指针变化, 按 etcd revision 取回完整 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
+pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent. publisher 先把完整的证书 generation 写入 etcd, 再用 compare-and-swap 切换 active 指针; pemcast 监听指针变化, 按 etcd revision 取回完整 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
 
 ```mermaid
 flowchart LR
@@ -15,11 +15,13 @@ flowchart LR
 
 ## 设计要点
 
-- 证书发布者与消费者解耦: pemcast 不包含签发, 审批或发布系统, 只消费一个明确的 etcd 协议.
+- 证书发布者与消费者解耦: pemcast 不包含签发或审批系统, 但提供 pointer-last 的安全 publisher 命令.
 - 远端 generation 不可变: 任何内容变化都使用新 generation 名, 避免读到半新半旧文件.
 - 校验发生在启用前: manifest 严格解析, 文件逐一校验 SHA-256, 证书和私钥必须通过 `tls.X509KeyPair`, 并满足有效期策略.
-- 本地发布是内容寻址的: release 目录名来自整个 bundle 的 digest, 相同内容不会重复写入.
+- 本地发布是内容寻址的: release 目录名来自整个 bundle 的 digest, 相同内容不会重复写入. 复用 release 前会校验 marker, 文件内容, mode 和目录树.
 - 应用路径稳定: 应用读取 `current/...`, pemcast 通过临时 symlink 和 rename 原子切换目标.
+- output root 互斥: 非 dry-run agent 按排序获取每个 root 的 `.pemcast/agent.lock`, 并持有到进程退出.
+- dry-run 无本地写入: 不创建 state directory 和 output root, 不读写 state, 不执行 deploy 或 hook.
 - 服务重载可重试: hook 在本地切换后执行, 失败会记录在 state 中, 由后续事件或周期 resync 重试.
 
 ## 快速上手
@@ -45,6 +47,19 @@ pemcast --config config/config.yaml config validate
 /pemcast/v1/bundles/nginx/01K4GENERATION/files/privkey.pem
 ```
 
+发布新 generation:
+
+```bash
+pemcast --config config/config.yaml publisher \
+  --target nginx \
+  --generation 01K4GENERATION \
+  --certificate fullchain.pem \
+  --private-key privkey.pem \
+  --previous-generation 01K4PREVIOUS
+```
+
+publisher 会在本地校验 key pair 和 SHA-256, 用 absent CAS 创建 generation key, 读回校验, 最后用 expected previous pointer CAS 写 active pointer. 已存在的 generation 名不会被覆盖. 回滚使用 `--activate-existing --generation <old>`.
+
 先不落盘测试远端内容:
 
 ```bash
@@ -64,6 +79,7 @@ pemcast --config config/config.yaml agent
 /etc/nginx/tls/
 ├── current -> .pemcast/releases/sha256-...
 └── .pemcast/
+    ├── agent.lock
     └── releases/
         ├── sha256-old/
         └── sha256-current/
@@ -76,7 +92,7 @@ pemcast --config config/config.yaml agent
 /etc/nginx/tls/current/privkey.pem
 ```
 
-同一个 output root 或 target set 只能运行一个 agent 进程. 当前 state 目录没有跨进程锁.
+配置会拒绝重复或祖先/后代重叠的 output root. 同一个 root 的第二个 agent 进程会因文件锁立即失败.
 
 ## Hook 契约
 
@@ -95,6 +111,8 @@ PEMCAST_BUNDLE_SHA256
 
 hook 必须幂等. 失败时新证书文件可能已经启用, pemcast 会记录失败并在下一次 watch 事件或周期性 resync 时重试, 且不会重写同一个 release.
 
+hook 默认只获得固定 `PATH` 和 `PEMCAST_*` 事件变量. 需要继承其他环境变量时, 在 `hook.pass-environment` 中显式列出变量名. hook 输出最多收集 4096 bytes, 超时会终止整个 process group.
+
 ## 命令
 
 ```text
@@ -103,6 +121,8 @@ pemcast agent --once
 pemcast agent --once --dry-run
 pemcast config example
 pemcast config validate
+pemcast publisher
+pemcast status --json
 pemcast version
 ```
 

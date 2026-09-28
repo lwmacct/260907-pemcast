@@ -22,7 +22,7 @@ type Config struct {
 type Agent struct {
 	Once          bool     `json:"once"           desc:"synchronize once and exit"`
 	DryRun        bool     `json:"dry-run"        desc:"validate changes without writing files or running hooks"`
-	StateDir      string   `json:"state-dir"      desc:"local state and lock directory"`
+	StateDir      string   `json:"state-dir"      desc:"local target state directory"`
 	MaxConcurrent int      `json:"max-concurrent" desc:"maximum targets reconciled concurrently"`
 	Etcd          Etcd     `json:"etcd"           desc:"etcd client configuration"`
 	Watch         Watch    `json:"watch"          desc:"etcd watch and retry configuration"`
@@ -92,13 +92,14 @@ type Validation struct {
 
 // Hook configures an executable invoked after a new release becomes active.
 type Hook struct {
-	Path    string        `json:"path"    desc:"post-activation executable path"`
-	Args    []string      `json:"args"    desc:"post-activation executable arguments"`
-	Timeout time.Duration `json:"timeout" desc:"hook execution timeout"`
+	Path            string        `json:"path"              desc:"post-activation executable path"`
+	Args            []string      `json:"args"              desc:"post-activation executable arguments"`
+	Timeout         time.Duration `json:"timeout"           desc:"hook execution timeout"`
+	PassEnvironment []string      `json:"pass-environment"  desc:"existing environment variable names explicitly passed to the hook"`
 }
 
-// DefaultConfig returns safe operational defaults. A target is intentionally
-// not supplied because local destinations are deployment-specific.
+// DefaultConfig returns safe operational defaults. No target is supplied
+// because local destinations and reload hooks are deployment-specific.
 func DefaultConfig() Config {
 	return Config{Agent: Agent{
 		StateDir:      "/var/lib/pemcast",
@@ -115,7 +116,16 @@ func DefaultConfig() Config {
 			RetryMax:       30 * time.Second,
 			JitterRatio:    0.2,
 		},
-		Targets: []Target{{
+		Targets: nil,
+	}}
+}
+
+// ExampleConfig returns defaults plus one representative target for operators
+// copying the generated example into a deployment-specific configuration.
+func ExampleConfig() Config {
+	cfg := DefaultConfig()
+	cfg.Agent.Targets = []Target{
+		{
 			ID:           "nginx",
 			DeletePolicy: "retain",
 			Output: Output{
@@ -135,16 +145,25 @@ func DefaultConfig() Config {
 				MinimumValidity: time.Hour,
 			},
 			Hook: Hook{
-				Path:    "/etc/pemcast/hooks/reload-nginx",
-				Timeout: 30 * time.Second,
+				Path: "/etc/pemcast/hooks/reload-nginx", Timeout: 30 * time.Second,
 			},
-		}},
-	}}
+		},
+	}
+	return cfg
 }
 
 // Validate checks cross-field constraints that cannot be expressed by cfgm's schema.
 func (c Config) Validate() error {
 	a := c.Agent
+	if err := a.ValidateCommon(); err != nil {
+		return err
+	}
+	return a.ValidateTargets()
+}
+
+// ValidateCommon checks settings shared by commands that use the agent's etcd
+// and protocol configuration, even when no local target is configured.
+func (a Agent) ValidateCommon() error {
 	if !filepath.IsAbs(a.StateDir) {
 		return fmt.Errorf("agent.state-dir must be absolute")
 	}
@@ -177,10 +196,16 @@ func (c Config) Validate() error {
 	if a.MaxConcurrent <= 0 {
 		return fmt.Errorf("agent.max-concurrent must be positive")
 	}
+	return nil
+}
+
+// ValidateTargets checks the deployment-specific local target set.
+func (a Agent) ValidateTargets() error {
 	if len(a.Targets) == 0 {
 		return fmt.Errorf("agent.targets is required")
 	}
 	seen := make(map[string]struct{}, len(a.Targets))
+	roots := make([]string, 0, len(a.Targets))
 	for i, target := range a.Targets {
 		if err := target.Validate(); err != nil {
 			return fmt.Errorf("agent.targets[%d]: %w", i, err)
@@ -189,6 +214,25 @@ func (c Config) Validate() error {
 			return fmt.Errorf("agent target %q is configured more than once", target.ID)
 		}
 		seen[target.ID] = struct{}{}
+		roots = append(roots, target.Output.Root)
+	}
+	if err := validateOutputRoots(roots); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateOutputRoots(roots []string) error {
+	for i, left := range roots {
+		for _, right := range roots[i+1:] {
+			relation, err := filepath.Rel(left, right)
+			if err != nil {
+				return fmt.Errorf("compare output roots %q and %q: %w", left, right, err)
+			}
+			if relation == "." || !strings.HasPrefix(relation, "..") {
+				return fmt.Errorf("output roots %q and %q overlap", left, right)
+			}
+		}
 	}
 	return nil
 }

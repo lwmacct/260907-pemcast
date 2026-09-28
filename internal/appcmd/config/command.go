@@ -22,7 +22,7 @@ var Command = &cli.Command{
 			Name:  "example",
 			Usage: "write an example configuration to standard output",
 			Action: func(context.Context, *cli.Command) error {
-				data, err := cfgm.ExampleYAML(appconfig.DefaultConfig())
+				data, err := cfgm.ExampleYAML(appconfig.ExampleConfig())
 				if err != nil {
 					return err
 				}

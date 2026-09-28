@@ -11,6 +11,11 @@ import (
 
 const SchemaV1 = "pemcast/v1"
 
+const (
+	KindCertificate = "certificate"
+	KindPrivateKey  = "private-key"
+)
+
 // Manifest describes the expected content of an immutable bundle generation.
 type Manifest struct {
 	Schema string         `json:"schema"`
@@ -65,6 +70,7 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("manifest certificate pairs are required")
 	}
 	files := make(map[string]struct{}, len(m.Files))
+	kinds := make(map[string]string, len(m.Files))
 	for index, file := range m.Files {
 		if !SafeName(file.Name) {
 			return fmt.Errorf("manifest files[%d] has unsafe name %q", index, file.Name)
@@ -73,6 +79,10 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("manifest file %q is duplicated", file.Name)
 		}
 		files[file.Name] = struct{}{}
+		if file.Kind != KindCertificate && file.Kind != KindPrivateKey {
+			return fmt.Errorf("manifest files[%d] has invalid kind %q", index, file.Kind)
+		}
+		kinds[file.Name] = file.Kind
 		digest, err := hex.DecodeString(file.SHA256)
 		if err != nil || len(digest) != sha256.Size || file.SHA256 != strings.ToLower(file.SHA256) {
 			return fmt.Errorf("manifest file %q has invalid sha256", file.Name)
@@ -84,6 +94,9 @@ func (m Manifest) Validate() error {
 		}
 		if _, ok := files[pair.PrivateKey]; !ok {
 			return fmt.Errorf("manifest pairs[%d] references unknown private key %q", index, pair.PrivateKey)
+		}
+		if kinds[pair.Certificate] != KindCertificate || kinds[pair.PrivateKey] != KindPrivateKey {
+			return fmt.Errorf("manifest pairs[%d] has mismatched file kinds", index)
 		}
 	}
 	return nil

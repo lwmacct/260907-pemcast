@@ -16,6 +16,9 @@ func (t Target) Validate() error {
 	if !filepath.IsAbs(t.Output.Root) {
 		return fmt.Errorf("output.root must be absolute")
 	}
+	if filepath.Clean(t.Output.Root) != t.Output.Root || t.Output.Root == string(filepath.Separator) {
+		return fmt.Errorf("output.root must be a clean, absolute, non-root path")
+	}
 	if !safeBundleName(t.Output.CurrentLink) {
 		return fmt.Errorf("output.current-link must be a safe file name")
 	}
@@ -67,7 +70,28 @@ func (t Target) Validate() error {
 	if t.Hook.Timeout < 0 {
 		return fmt.Errorf("hook.timeout must not be negative")
 	}
+	for index, name := range t.Hook.PassEnvironment {
+		if !validEnvironmentName(name) {
+			return fmt.Errorf("hook.pass-environment[%d] must be a valid environment variable name", index)
+		}
+	}
 	return nil
+}
+
+func validEnvironmentName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for index, character := range name {
+		valid := character == '_' ||
+			(character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(index > 0 && character >= '0' && character <= '9')
+		if !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func safeBundleName(value string) bool {

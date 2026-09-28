@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"time"
@@ -19,6 +20,7 @@ type Application struct {
 	config     config.Agent
 	source     *etcdsource.Client
 	controller *reconcile.Controller
+	locks      []*deploy.RootLock
 	logger     *slog.Logger
 }
 
@@ -33,15 +35,45 @@ func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	var locks []*deploy.RootLock
+	if !cfg.Agent.DryRun {
+		locks, err = deploy.LockRoots(deploy.TargetRoots(cfg.Agent.Targets))
+		if err != nil {
+			return nil, err
+		}
+		if err := store.Ensure(); err != nil {
+			closeRootLocks(locks)
+			return nil, err
+		}
+	}
 	source, err := etcdsource.New(cfg.Agent.Etcd, cfg.Agent.Watch.RootPrefix)
 	if err != nil {
+		closeRootLocks(locks)
 		return nil, err
 	}
 	controller := reconcile.New(source, deploy.New(), hook.New(), store, cfg.Agent, logger)
-	return &Application{config: cfg.Agent, source: source, controller: controller, logger: logger}, nil
+	return &Application{config: cfg.Agent, source: source, controller: controller, locks: locks, logger: logger}, nil
 }
 
-func (a *Application) Close() error { return a.source.Close() }
+func (a *Application) Close() error {
+	sourceErr := a.source.Close()
+	if errors.Is(sourceErr, context.Canceled) {
+		sourceErr = nil
+	}
+	var lockErrs []error
+	for _, lock := range a.locks {
+		if err := lock.Close(); err != nil {
+			lockErrs = append(lockErrs, err)
+		}
+	}
+	return errors.Join(append([]error{sourceErr}, lockErrs...)...)
+}
+
+func closeRootLocks(locks []*deploy.RootLock) {
+	for _, lock := range locks {
+		_ = lock.Close()
+	}
+}
 
 func (a *Application) Run(ctx context.Context) error {
 	if a.config.Once {
