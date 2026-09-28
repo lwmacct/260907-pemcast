@@ -1,10 +1,8 @@
 # pemcast
 
-`pemcast` watches versioned TLS certificate bundles in etcd, validates them,
-atomically activates them as local release directories, and invokes a trusted
-local reload hook.
+`pemcast` 监听 etcd 中带版本的 TLS 证书包, 校验后将其原子启用为本地 release 目录, 并调用可信的本地重载 hook.
 
-## Commands
+## 命令
 
 ```text
 pemcast agent
@@ -14,15 +12,11 @@ pemcast config validate
 pemcast version
 ```
 
-Configuration uses `cfgm`: defaults are overridden by the first default config
-file, an explicit `--config/-c` file, `PEMCAST_*` environment variables, and
-explicit command flags, in that order. Copy `config/config.example.yaml` to
-`config/config.yaml` to start.
+配置由 `cfgm` 加载: 默认值依次被第一个默认配置文件、显式指定的 `--config/-c` 文件、`PEMCAST_*` 环境变量和显式命令行参数覆盖. 可以将 `config/config.example.yaml` 复制为 `config/config.yaml` 作为起点.
 
-## Remote protocol
+## 远端协议
 
-A publisher writes every immutable generation before changing its active
-pointer:
+发布者在修改 active 指针之前, 必须先写入每个不可变的 generation:
 
 ```text
 /pemcast/v1/active/nginx = 01K4GENERATION
@@ -31,7 +25,7 @@ pointer:
 /pemcast/v1/bundles/nginx/01K4GENERATION/files/privkey.pem
 ```
 
-Example manifest:
+manifest 示例:
 
 ```json
 {
@@ -57,13 +51,11 @@ Example manifest:
 }
 ```
 
-Bundles are fetched at the revision of the snapshot or watch event. Each file
-is SHA-256 verified, and the configured certificate/private-key pair must pass
-`tls.X509KeyPair` before anything is activated.
+Bundle 会按 snapshot 或 watch 事件对应的 etcd revision 获取. 每个文件都会经过 SHA-256 校验, 并且任何内容被启用之前, 配置的证书/私钥对必须通过 `tls.X509KeyPair` 校验.
 
-## Local layout
+## 本地布局
 
-For an output root such as `/etc/nginx/tls`, pemcast manages:
+对于 `/etc/nginx/tls` 这样的输出根目录, pemcast 会管理:
 
 ```text
 /etc/nginx/tls/
@@ -74,21 +66,18 @@ For an output root such as `/etc/nginx/tls`, pemcast manages:
         └── sha256-current/
 ```
 
-Applications should read paths below `current`, for example:
+应用应读取 `current` 下的路径, 例如:
 
 ```text
 /etc/nginx/tls/current/fullchain.pem
 /etc/nginx/tls/current/privkey.pem
 ```
 
-A release is completely written and synced before the `current` symlink is
-atomically replaced. Old inactive releases are pruned according to
-`retain-releases`.
+release 会完整写入并同步后, `current` symlink 才会被原子替换. 旧的未启用 release 会依据 `retain-releases` 清理.
 
-## Hooks
+## 钩子
 
-The configured executable is run directly without a shell after activation.
-It receives a JSON event on stdin and these environment variables:
+配置的可执行文件会在启用后直接运行, 不经过 shell. 它会从 stdin 接收一个 JSON 事件, 并获得以下环境变量:
 
 ```text
 PEMCAST_TARGET
@@ -101,10 +90,9 @@ PEMCAST_CHANGED_FILES
 PEMCAST_BUNDLE_SHA256
 ```
 
-A failed hook is recorded in the local target state. The next watch event or
-periodic resync retries it without rewriting the already active release.
+失败的 hook 会被记录到本地 target 状态中. 下一次 watch 事件或周期性 resync 会重试它, 且不会重写已经启用的 release.
 
-## Development
+## 开发
 
 ```bash
 go test ./...
