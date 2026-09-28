@@ -29,7 +29,6 @@ agent:
 
   # etcd watch and retry configuration
   watch:
-    root-prefix: "/pemcast/v1" # root key prefix for the pemcast/v1 protocol
     resync-interval: 10m0s # periodic full reconciliation interval, zero disables it
     retry-min: 1s # minimum retry delay
     retry-max: 30s # maximum retry delay

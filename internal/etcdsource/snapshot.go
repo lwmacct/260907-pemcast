@@ -17,10 +17,9 @@ type Snapshot struct {
 	Active   map[string]string
 }
 
-// SnapshotActive retrieves every active pointer and the revision from which a
-// lossless watch can continue.
+// SnapshotActive retrieves every active pointer and the revision from which a lossless watch can continue.
 func (c *Client) SnapshotActive(ctx context.Context) (Snapshot, error) {
-	requestCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	requestCtx, cancel := c.requestContext(ctx)
 	defer cancel()
 	prefix := c.activePrefix()
 	response, err := c.client.Get(requestCtx, prefix, clientv3.WithPrefix())
@@ -39,61 +38,59 @@ func (c *Client) SnapshotActive(ctx context.Context) (Snapshot, error) {
 	return Snapshot{Revision: response.Header.Revision, Active: active}, nil
 }
 
-// FetchBundle reads one immutable generation at a single etcd revision.
+// FetchBundle reads one immutable single-key bundle at the requested revision.
 func (c *Client) FetchBundle(ctx context.Context, targetID, generation string, revision int64) (*bundle.Material, error) {
 	if !bundle.SafeName(targetID) || !bundle.SafeName(generation) {
 		return nil, fmt.Errorf("unsafe target or generation")
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	requestCtx, cancel := c.requestContext(ctx)
 	defer cancel()
-	prefix := c.bundlePrefix(targetID, generation)
-	options := []clientv3.OpOption{clientv3.WithPrefix()}
+	key := c.bundleKey(targetID, generation)
+	options := []clientv3.OpOption{}
 	if revision > 0 {
 		options = append(options, clientv3.WithRev(revision))
 	}
-	response, err := c.client.Get(requestCtx, prefix, options...)
+	response, err := c.client.Get(requestCtx, key, options...)
 	if err != nil {
-		return nil, fmt.Errorf("read etcd bundle %s/%s: %w", targetID, generation, err)
+		return nil, fmt.Errorf("read etcd bundle %q: %w", key, err)
 	}
-	var manifestBytes []byte
-	files := make(map[string][]byte)
-	for _, kv := range response.Kvs {
-		relative := strings.TrimPrefix(string(kv.Key), prefix)
-		switch {
-		case relative == "manifest.json":
-			manifestBytes = append([]byte(nil), kv.Value...)
-		case strings.HasPrefix(relative, "files/"):
-			name := strings.TrimPrefix(relative, "files/")
-			if !bundle.SafeName(name) {
-				return nil, fmt.Errorf("bundle contains unsafe file key %q", relative)
-			}
-			if len(kv.Value) > maxBundleFileBytes {
-				return nil, fmt.Errorf("bundle file %q exceeds %d bytes", name, maxBundleFileBytes)
-			}
-			files[name] = append([]byte(nil), kv.Value...)
-		default:
-			return nil, fmt.Errorf("bundle contains unknown key %q", relative)
-		}
+	if len(response.Kvs) != 1 {
+		return nil, fmt.Errorf("bundle %q is missing", key)
 	}
-	if len(manifestBytes) == 0 {
-		return nil, fmt.Errorf("bundle manifest is missing")
-	}
-	manifest, err := bundle.ParseManifest(manifestBytes)
+	return materialFromValue(targetID, generation, response.Kvs[0].Value, response.Header.Revision)
+}
+
+func materialFromValue(targetID, generation string, value []byte, revision int64) (*bundle.Material, error) {
+	manifest, files, digest, err := bundle.Decode(value)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode bundle: %w", err)
 	}
-	digest, err := bundle.VerifyFiles(manifest, files)
-	if err != nil {
+	if err := bundle.ValidateGeneration(generation, digest); err != nil {
 		return nil, err
 	}
 	return &bundle.Material{
-		TargetID: targetID, Generation: generation, Revision: response.Header.Revision,
-		Manifest: manifest, Files: files, Digest: digest,
+		TargetID:   targetID,
+		Generation: generation,
+		Revision:   revision,
+		Manifest:   manifest,
+		Files:      files,
+		Digest:     digest,
 	}, nil
 }
 
-func (c *Client) activePrefix() string { return c.rootPrefix + "/active/" }
+func (c *Client) activePrefix() string { return ActivePrefix() }
 
-func (c *Client) bundlePrefix(targetID, generation string) string {
-	return path.Join(c.rootPrefix, "bundles", targetID, generation) + "/"
+func (c *Client) bundleKey(targetID, generation string) string {
+	return BundleKey(targetID, generation)
+}
+
+// ActivePrefix returns the fixed prefix watched for target pointers.
+func ActivePrefix() string { return ProtocolRoot + "/active/" }
+
+// ActiveKey returns one target's active pointer key.
+func ActiveKey(targetID string) string { return path.Join(ProtocolRoot, "active", targetID) }
+
+// BundleKey returns one immutable single-key bundle path.
+func BundleKey(targetID, generation string) string {
+	return path.Join(ProtocolRoot, "bundles", targetID, generation)
 }

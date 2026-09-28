@@ -30,12 +30,12 @@ go test ./internal/config
 
 - CLI/生命周期: 检查 `cmd/pemcast`, `internal/appcmd/agent`, `internal/appcmd/publisher` 和 `internal/appcmd/status`. 保持 signal cancellation, once/watch 行为和 output root 锁生命周期.
 - 配置: 修改 `internal/config/config.go` 与 `validation.go`, 并覆盖 path 安全, mode, duration, target 唯一性, output root 重叠, mapping 引用和 hook 环境变量名.
-- 远端协议: 保持安全 name, 4 MiB 限制, unknown-key 拒绝, kind 校验, 精确 file-set 校验, 以及从 `snapshot + 1` 开始 watch. snapshot/watch 仍需集成测试.
-- bundle 校验: 保持 digest 逻辑独立于 etcd 和 deployment. 测试 manifest 拒绝, digest 顺序, 缺失/多余文件, key mismatch, kind mismatch 和 validity 边界.
+- 远端协议: 保持固定 `/pemcast/v2` root, exact-key fetch, 1 MiB 单 key bundle 限制, 严格 JSON, kind/encoding 校验, generation/digest 匹配, 以及从 `snapshot + 1` 开始 watch. snapshot/watch 仍需真实 etcd 集成测试.
+- bundle 校验: 保持 digest 逻辑独立于 etcd 和 deployment. 测试 manifest 拒绝, digest 顺序和稳定性, base64 解码, 文件 hash, key mismatch, kind mismatch, encoding mismatch, size limit 和 validity 边界.
 - reconcile: 覆盖 changed/unchanged digest, dry-run, hook retry, state 更新, concurrency, snapshot 缺失 target 和两种 delete policy. 保持 consumer-side 接口便于 fake 注入.
 - deployment: 保持排序 flock, staging, fsync, rename, content-addressed release, release 完整性校验, 原子 relative symlink 切换和 active-release 保留.
 - hook/state: 保持直接执行, 最小环境, event schema, process group 超时, 输出限额, 严格 JSON 和原子 state 写入.
-- publisher: 保持本地 key pair 校验, absent generation creation, 读回 digest 校验和 expected pointer CAS. 已存在 generation 必须拒绝重写.
+- publisher: 保持 plan/apply 分离, 本地 key pair 校验, plan 后材料变化检测, content-addressed generation, bundle+pointer 原子 transaction, active value+ModRevision CAS, existing bundle exact match 和 activate 前 X509KeyPair 校验.
 - status: 保持只读, 不联系 etcd, 不创建目录, 不输出证书内容或凭据.
 
 不要为尚未需要的能力提前增加接口; 新接口应从 controller 或命令的实际测试边界自然产生.

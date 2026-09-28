@@ -80,6 +80,6 @@ cat /var/lib/pemcast/nginx.json | jq .
 - deploy: output 权限, release 完整性或文件系统失败;
 - hook timeout/nonzero: executable, authorization 或下游服务失败.
 
-回滚时把 active pointer 移回一个完整的旧 generation. 需要时 pemcast 会重建已被 prune 的本地 release. 删除 pointer 永远不会删除本地文件: `retain` 继续提供服务, `fail` 报告删除.
+回滚使用 `pemcast publish activate` 把 active pointer 移回完整的旧 content-addressed generation. 需要时 pemcast 会重建已被 prune 的本地 release. 删除 pointer 永远不会删除本地文件: `retain` 继续提供服务, `fail` 报告删除.
 
 手工恢复前先停止持有 `agent.lock` 的 agent, 修复完整 release 和 symlink, 再重启并对目标 generation 执行 dry-run. 正常运行期间不要编辑 `.pemcast` 内部结构.

@@ -46,7 +46,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
 			return nil, err
 		}
 	}
-	source, err := etcdsource.New(cfg.Agent.Etcd, cfg.Agent.Watch.RootPrefix)
+	source, err := etcdsource.New(cfg.Agent.Etcd)
 	if err != nil {
 		closeRootLocks(locks)
 		return nil, err

@@ -1,76 +1,126 @@
-# 发布 pemcast bundle
+# 发布 pemcast v2 bundle
 
-以 target `nginx`, generation `01K4GENERATION`, root `/pemcast/v1` 为例:
+v2 协议固定使用 `/pemcast/v2`, 不做 v1 兼容或迁移:
 
 ```text
-/pemcast/v1/active/nginx = 01K4GENERATION
-/pemcast/v1/bundles/nginx/01K4GENERATION/manifest.json
-/pemcast/v1/bundles/nginx/01K4GENERATION/files/fullchain.pem
-/pemcast/v1/bundles/nginx/01K4GENERATION/files/privkey.pem
+/pemcast/v2/active/nginx = sha256-<bundle-digest>
+/pemcast/v2/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
-先创建并校验所有 bundle key, 最后移动 pointer. generation 不可变; 任何内容变化都使用新名字, 已存在 generation 不会被覆盖.
+generation 由 bundle 内容计算, 操作者不手工命名. 单 key JSON 将证书和私钥 base64 内联, 完整 encoded value 最大 1 MiB.
 
 ```mermaid
 flowchart TD
-    material["证书与私钥文件"] --> manifest["生成 manifest 与 SHA-256"]
-    manifest --> generation["写入 immutable generation"]
-    generation --> verify{"前缀读取与 digest 校验通过?"}
-    verify -->|"否"| stop["不移动 active pointer"]
-    verify -->|"是"| pointer["写入 active pointer"]
-    pointer --> dryrun["agent --once --dry-run"]
-    dryrun --> sync["agent --once 或 watch 模式"]
+    material["证书与私钥"] --> plan["publish plan: 计算 digest + 捕获 active ModRevision"]
+    plan --> apply{"publish apply: 本地材料仍匹配 plan?"}
+    apply -->|"否"| stop["拒绝执行"]
+    apply -->|"是"| txn["etcd transaction"]
+    txn --> condition{"bundle absent + active value/ModRevision 匹配?"}
+    condition -->|"否"| reject["bundle 与 pointer 都不提交"]
+    condition -->|"是"| commit["原子提交 bundle + pointer"]
+    commit --> dryrun["agent --once --dry-run"]
 ```
 
-优先使用内置 publisher:
+## 首次发布
+
+生成计划:
 
 ```bash
-pemcast --config /etc/pemcast/config.yaml publisher \
+pemcast --config /etc/pemcast/config.yaml publish plan \
   --target nginx \
-  --generation 01K4GENERATION \
   --certificate fullchain.pem \
   --private-key privkey.pem \
-  --previous-generation 01K4PREVIOUS
+  --initial \
+  --output first-release.json
 ```
 
-首次发布且 active pointer 不存在时, 用 `--allow-missing-active` 替代 `--previous-generation`. publisher 会先在本地校验 key pair, 生成 manifest, 用 absent CAS 创建 generation key, 读回校验 digest, 最后用 expected previous pointer CAS 写 active pointer. 任一步失败都不会移动 pointer.
-
-手工 `etcdctl` 只应用于灾备排查, 不应成为常规发布路径. 手工流程必须保持 absent creation, 完整读回校验和 pointer CAS, 不允许覆盖已存在的 generation key.
-
-manifest 结构如下, `kind` 只允许 `certificate` 和 `private-key`:
-
-```json
-{
-  "schema": "pemcast/v1",
-  "files": [
-    {"name": "fullchain.pem", "kind": "certificate", "sha256": "<lowercase sha256>"},
-    {"name": "privkey.pem", "kind": "private-key", "sha256": "<lowercase sha256>"}
-  ],
-  "pairs": [
-    {"certificate": "fullchain.pem", "private-key": "privkey.pem"}
-  ]
-}
-```
-
-每个文件最大 4 MiB, 实际获取和声明的 file set 必须完全一致.
-
-回滚到已有 immutable generation 时不重写 bundle:
+执行:
 
 ```bash
-pemcast --config /etc/pemcast/config.yaml publisher \
-  --target nginx \
-  --generation 01K4PREVIOUS \
-  --activate-existing \
-  --previous-generation 01K4CURRENT
+pemcast --config /etc/pemcast/config.yaml publish apply \
+  --plan first-release.json
 ```
 
-然后执行 dry-run 和同步:
+## 后续发布
+
+先获取当前 active generation. 可以从 `pemcast status --json` 的本地 state 或受控 etcd 只读命令获得, 然后显式写入计划:
+
+```bash
+pemcast --config /etc/pemcast/config.yaml publish plan \
+  --target nginx \
+  --certificate fullchain.pem \
+  --private-key privkey.pem \
+  --expected-active-generation sha256-current \
+  --output release.json
+```
+
+执行:
+
+```bash
+pemcast --config /etc/pemcast/config.yaml publish apply \
+  --plan release.json
+```
+
+`publish plan` 会:
+
+1. 读取证书和私钥.
+2. 校验 `tls.X509KeyPair`.
+3. 计算每个文件的 SHA-256 和 whole-bundle digest.
+4. 推导 `sha256-<digest>` generation.
+5. 检查 active pointer 是否处于显式预期状态.
+6. 记录 active key ModRevision.
+7. 输出本地文件路径和 digest, 不输出私钥内容.
+
+`publish apply` 会重新读取本地文件. 如果证书, 私钥或 digest 在 plan 后变化, 直接失败. 新 bundle 走一个 etcd transaction:
+
+```text
+If bundle key absent
+AND active generation matches
+AND active ModRevision matches
+
+Then Put complete bundle
+     Put active pointer
+```
+
+任一条件失败时, bundle 和 pointer 都不会提交. 如果同 digest bundle 已存在, 只允许完全相同的内容, 然后单独用 active value + ModRevision CAS 切换 pointer.
+
+## 回滚
+
+回滚不重写 bundle. 先取得当前 active generation 和 active key ModRevision:
+
+```bash
+etcdctl get /pemcast/v2/active/nginx --write-out=json |
+  jq -r '.kvs[0].mod_revision, (.kvs[0].value | @base64d)'
+```
+
+然后执行:
+
+```bash
+pemcast --config /etc/pemcast/config.yaml publish activate \
+  --target nginx \
+  --generation sha256-old \
+  --expected-active-generation sha256-current \
+  --expected-active-mod-revision 123
+```
+
+`publish activate` 会严格解码远端 bundle, 校验 digest/generation 和 X509KeyPair. 只有 active value 和 ModRevision 都匹配时才切换. 这可以防止并发发布或 `g0 -> g1 -> g0` ABA 竞争.
+
+## 发布后验证
+
+在消费者节点执行:
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml agent --once --dry-run
-pemcast --config /etc/pemcast/config.yaml agent --once
+pemcast --config /etc/pemcast/config.yaml status --json
 ```
 
-相同内容会解析到同一个 digest, 因此本地可能不会重写文件, 也可能不会触发 hook.
+确认 local current digest 与远端 generation 的 digest 一致. watch 模式会自动触发 reconcile; `agent --once` 用于显式同步.
 
-publisher 义务: 不修改已暴露的 generation, 保留旧 generation 用于回滚, 哈希精确 bytes, 安全保存凭据, 最后移动 pointer.
+## 运维规则
+
+- 不修改已暴露的 generation.
+- 不手工指定或复用 generation 名.
+- 不用 etcdctl 常规写入 v2 数据.
+- plan 文件权限应为 0600, 因为它暴露证书路径和 digest 元数据.
+- 远端历史 bundle 清理由独立运维策略负责, 必须永远保留 active generation.
+- v1 数据不能被 v2 agent 消费; 需要重新用 v2 publisher 发布.

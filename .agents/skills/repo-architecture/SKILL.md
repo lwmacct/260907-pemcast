@@ -11,4 +11,4 @@ description: "解释, 评审或修改 pemcast 的架构, 包边界, 同步不变
 2. 将 etcd 协议和本地启用不变量视为契约. 如果请求的修改会削弱其中一个, 明确说明后果并提出更安全的设计.
 3. 用相关包的针对性测试加 `go test ./...` 验证架构修改. 如果 `internal/reconcile` 发生实质变化, 补充 controller 级测试, 因为该包当前没有直接测试.
 
-当前运行约束: 非 dry-run agent 由每个 output root 的排他文件锁保护. 修改锁语义时必须保持多 root 排序加锁和进程退出释放.
+当前运行约束: v2 协议固定 `/pemcast/v2`; generation 必须由 bundle digest 推导; 新 bundle 与 active pointer 必须在同一个 etcd transaction 中提交; 非 dry-run agent 由每个 output root 的排他文件锁保护. 修改任一语义时必须同步测试与文档.

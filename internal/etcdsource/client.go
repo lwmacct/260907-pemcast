@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -14,17 +13,17 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/config"
 )
 
-const maxBundleFileBytes = 4 << 20
+// ProtocolRoot is the fixed, non-configurable pemcast/v2 namespace.
+const ProtocolRoot = "/pemcast/v2"
 
 // Client wraps the official etcd v3 client with pemcast protocol paths.
 type Client struct {
 	client         *clientv3.Client
-	rootPrefix     string
 	requestTimeout time.Duration
 }
 
 // New creates an etcd client. It does not require the cluster to be reachable yet.
-func New(cfg config.Etcd, rootPrefix string) (*Client, error) {
+func New(cfg config.Etcd) (*Client, error) {
 	tlsConfig, err := buildTLSConfig(cfg.TLS)
 	if err != nil {
 		return nil, err
@@ -39,11 +38,11 @@ func New(cfg config.Etcd, rootPrefix string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create etcd client: %w", err)
 	}
-	return newClient(client, rootPrefix, cfg.RequestTimeout), nil
+	return newClient(client, cfg.RequestTimeout), nil
 }
 
-func newClient(client *clientv3.Client, rootPrefix string, requestTimeout time.Duration) *Client {
-	return &Client{client: client, rootPrefix: cleanRoot(rootPrefix), requestTimeout: requestTimeout}
+func newClient(client *clientv3.Client, requestTimeout time.Duration) *Client {
+	return &Client{client: client, requestTimeout: requestTimeout}
 }
 
 func buildTLSConfig(cfg config.EtcdTLS) (*tls.Config, error) {
@@ -87,5 +86,3 @@ func (c *Client) Close() error {
 	}
 	return c.client.Close()
 }
-
-func cleanRoot(value string) string { return "/" + strings.Trim(strings.TrimSpace(value), "/") }

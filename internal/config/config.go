@@ -3,7 +3,6 @@ package config
 
 import (
 	"fmt"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -50,7 +49,6 @@ type EtcdTLS struct {
 
 // Watch configures active-pointer watches and safety resynchronization.
 type Watch struct {
-	RootPrefix     string        `json:"root-prefix"     desc:"root key prefix for the pemcast/v1 protocol"`
 	ResyncInterval time.Duration `json:"resync-interval" desc:"periodic full reconciliation interval, zero disables it"`
 	RetryMin       time.Duration `json:"retry-min"       desc:"minimum retry delay"`
 	RetryMax       time.Duration `json:"retry-max"       desc:"maximum retry delay"`
@@ -110,7 +108,6 @@ func DefaultConfig() Config {
 			RequestTimeout: 10 * time.Second,
 		},
 		Watch: Watch{
-			RootPrefix:     "/pemcast/v1",
 			ResyncInterval: 10 * time.Minute,
 			RetryMin:       time.Second,
 			RetryMax:       30 * time.Second,
@@ -180,12 +177,6 @@ func (a Agent) ValidateCommon() error {
 	}
 	if (a.Etcd.TLS.CertFile == "") != (a.Etcd.TLS.KeyFile == "") {
 		return fmt.Errorf("agent.etcd.tls cert-file and key-file must be configured together")
-	}
-	if strings.TrimSpace(a.Watch.RootPrefix) == "" ||
-		!strings.HasPrefix(a.Watch.RootPrefix, "/") ||
-		path.Clean(a.Watch.RootPrefix) != a.Watch.RootPrefix ||
-		a.Watch.RootPrefix == "/" {
-		return fmt.Errorf("agent.watch.root-prefix must be a clean, absolute, non-root key prefix")
 	}
 	if a.Watch.ResyncInterval < 0 || a.Watch.RetryMin <= 0 || a.Watch.RetryMax < a.Watch.RetryMin {
 		return fmt.Errorf("agent.watch retry and resync durations are invalid")

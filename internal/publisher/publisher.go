@@ -7,229 +7,316 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"os"
-	"path"
-	"strings"
+	"path/filepath"
 
 	"github.com/lwmacct/260907-pemcast/internal/bundle"
+	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
 )
 
-const maxFileBytes = 4 << 20
+const PlanSchema = "pemcast-publish/v1"
+
+const (
+	certificateName = "fullchain.pem"
+	privateKeyName  = "privkey.pem"
+)
 
 type KV interface {
-	Get(ctx context.Context, key string) (string, bool, error)
-	PutIf(ctx context.Context, key, value, expected string, expectedExists bool) (bool, error)
+	Get(ctx context.Context, key string) (etcdsource.Value, error)
+	CreateBundleAndSwapActive(
+		ctx context.Context,
+		bundleKey, bundleValue, activeKey, generation string,
+		expected etcdsource.ActiveCondition,
+	) (bool, error)
+	SwapActive(ctx context.Context, activeKey, generation string, expected etcdsource.ActiveCondition) (bool, error)
 }
 
-type Options struct {
-	RootPrefix         string
-	TargetID           string
-	Generation         string
-	CertificatePath    string
-	PrivateKeyPath     string
-	PreviousGeneration string
-	AllowMissingActive bool
-	ActivateExisting   bool
+type PlanOptions struct {
+	TargetID                 string
+	CertificatePath          string
+	PrivateKeyPath           string
+	ExpectedActiveGeneration string
+	Initial                  bool
 }
 
-type material struct {
+type Plan struct {
+	Schema                    string `json:"schema"`
+	TargetID                  string `json:"target-id"`
+	Generation                string `json:"generation"`
+	BundleSHA256              string `json:"bundle-sha256"`
+	CertificatePath           string `json:"certificate-path"`
+	PrivateKeyPath            string `json:"private-key-path"`
+	CertificateSHA256         string `json:"certificate-sha256"`
+	PrivateKeySHA256          string `json:"private-key-sha256"`
+	ExpectedActiveGeneration  string `json:"expected-active-generation,omitempty"`
+	ExpectedActiveModRevision int64  `json:"expected-active-mod-revision"`
+	ExpectedActiveExists      bool   `json:"expected-active-exists"`
+}
+
+type ActivateOptions struct {
+	TargetID                  string
+	Generation                string
+	ExpectedActiveGeneration  string
+	ExpectedActiveModRevision int64
+	Initial                   bool
+}
+
+type localMaterial struct {
 	manifest bundle.Manifest
 	files    map[string][]byte
 	digest   string
 }
 
-func Publish(ctx context.Context, kv KV, options Options) error {
-	if err := options.validate(); err != nil {
+func CreatePlan(ctx context.Context, kv KV, options PlanOptions) (Plan, error) {
+	if err := validateTarget(options.TargetID); err != nil {
+		return Plan{}, err
+	}
+	if err := validateExpected(options.ExpectedActiveGeneration, options.Initial); err != nil {
+		return Plan{}, err
+	}
+	material, certificatePath, privateKeyPath, err := readMaterial(options.CertificatePath, options.PrivateKeyPath)
+	if err != nil {
+		return Plan{}, err
+	}
+	if err := validateMaterial(material); err != nil {
+		return Plan{}, err
+	}
+	if _, err := bundle.Encode(material.manifest); err != nil {
+		return Plan{}, err
+	}
+	expected, err := captureActive(ctx, kv, options.TargetID, options.ExpectedActiveGeneration, options.Initial)
+	if err != nil {
+		return Plan{}, err
+	}
+
+	return Plan{
+		Schema:                    PlanSchema,
+		TargetID:                  options.TargetID,
+		Generation:                bundle.Generation(material.digest),
+		BundleSHA256:              material.digest,
+		CertificatePath:           certificatePath,
+		PrivateKeyPath:            privateKeyPath,
+		CertificateSHA256:         hash(material.files[certificateName]),
+		PrivateKeySHA256:          hash(material.files[privateKeyName]),
+		ExpectedActiveGeneration:  expected.Generation,
+		ExpectedActiveModRevision: expected.ModRevision,
+		ExpectedActiveExists:      expected.Exists,
+	}, nil
+}
+
+func DecodePlan(data []byte) (Plan, error) {
+	var plan Plan
+	if err := json.Unmarshal(data, &plan, json.RejectUnknownMembers(true)); err != nil {
+		return Plan{}, fmt.Errorf("decode publish plan: %w", err)
+	}
+	if plan.Schema != PlanSchema {
+		return Plan{}, fmt.Errorf("unsupported publish plan schema %q", plan.Schema)
+	}
+	if err := validateTarget(plan.TargetID); err != nil {
+		return Plan{}, err
+	}
+	if err := validateExpected(plan.ExpectedActiveGeneration, !plan.ExpectedActiveExists); err != nil {
+		return Plan{}, err
+	}
+	if plan.Generation != bundle.Generation(plan.BundleSHA256) {
+		return Plan{}, fmt.Errorf("plan generation does not match bundle digest")
+	}
+	return plan, nil
+}
+
+func Apply(ctx context.Context, kv KV, plan Plan) error {
+	if err := validateTarget(plan.TargetID); err != nil {
 		return err
 	}
-	rootPrefix := cleanRoot(options.RootPrefix)
-	activeKey := activeKey(rootPrefix, options.TargetID)
-	current, exists, err := kv.Get(ctx, activeKey)
-	if err != nil {
-		return fmt.Errorf("read active pointer: %w", err)
+	if err := validateExpected(plan.ExpectedActiveGeneration, !plan.ExpectedActiveExists); err != nil {
+		return err
 	}
-	activeExists := exists
-	expected := current
-	switch {
-	case options.PreviousGeneration != "":
-		if !activeExists || current != options.PreviousGeneration {
-			return fmt.Errorf("active pointer is %q, expected %q", pointerValue(exists, current), options.PreviousGeneration)
-		}
-	case activeExists:
-		if !bundle.SafeName(current) {
-			return fmt.Errorf("active pointer %q is unsafe", current)
-		}
-	case !options.AllowMissingActive:
-		return fmt.Errorf("active pointer is missing and --allow-missing-active was not set")
+	material, _, _, err := readMaterial(plan.CertificatePath, plan.PrivateKeyPath)
+	if err != nil {
+		return fmt.Errorf("reload local certificate material: %w", err)
+	}
+	if material.digest != plan.BundleSHA256 ||
+		hash(material.files[certificateName]) != plan.CertificateSHA256 ||
+		hash(material.files[privateKeyName]) != plan.PrivateKeySHA256 {
+		return fmt.Errorf("local certificate material changed after publish plan")
+	}
+	if err := validateMaterial(material); err != nil {
+		return fmt.Errorf("reload local certificate material: %w", err)
+	}
+	encoded, err := bundle.Encode(material.manifest)
+	if err != nil {
+		return err
 	}
 
-	bundleRootKey := bundleRoot(rootPrefix, options.TargetID, options.Generation)
-	fileKeys := []string{
-		bundleRootKey + "/files/fullchain.pem",
-		bundleRootKey + "/files/privkey.pem",
-	}
-	manifestKey := bundleRootKey + "/manifest.json"
-
-	var local material
-	if options.ActivateExisting {
-		for _, key := range append(fileKeys, manifestKey) {
-			if _, exists, err := kv.Get(ctx, key); err != nil {
-				return fmt.Errorf("inspect existing generation: %w", err)
-			} else if !exists {
-				return fmt.Errorf("existing generation is missing %q", key)
-			}
-		}
-	} else {
-		local, err = readMaterial(options)
-		if err != nil {
-			return fmt.Errorf("read certificate material: %w", err)
-		}
-		manifestBytes, err := json.Marshal(local.manifest)
-		if err != nil {
-			return fmt.Errorf("encode manifest: %w", err)
-		}
-		values := []struct {
-			key   string
-			name  string
-			value string
-		}{
-			{key: fileKeys[0], name: "fullchain.pem", value: string(local.files["fullchain.pem"])},
-			{key: fileKeys[1], name: "privkey.pem", value: string(local.files["privkey.pem"])},
-		}
-		for _, item := range values {
-			created, err := kv.PutIf(ctx, item.key, item.value, "", false)
-			if err != nil {
-				return fmt.Errorf("create bundle file %q: %w", item.name, err)
-			}
-			if !created {
-				return fmt.Errorf("generation %q already exists", options.Generation)
-			}
-		}
-		created, err := kv.PutIf(ctx, manifestKey, string(manifestBytes), "", false)
-		if err != nil {
-			return fmt.Errorf("create manifest: %w", err)
-		}
-		if !created {
-			return fmt.Errorf("generation %q already exists", options.Generation)
-		}
-	}
-
-	fetched := make(map[string][]byte, len(fileKeys))
-	for _, key := range fileKeys {
-		value, exists, err := kv.Get(ctx, key)
-		if err != nil {
-			return fmt.Errorf("verify bundle file %q: %w", key, err)
-		}
-		if !exists {
-			return fmt.Errorf("verify bundle file %q: value missing", key)
-		}
-		name := key[strings.LastIndex(key, "/")+1:]
-		fetched[name] = []byte(value)
-	}
-	manifestValue, exists, err := kv.Get(ctx, manifestKey)
+	bundleKey := etcdsource.BundleKey(plan.TargetID, plan.Generation)
+	activeKey := etcdsource.ActiveKey(plan.TargetID)
+	existing, err := kv.Get(ctx, bundleKey)
 	if err != nil {
-		return fmt.Errorf("verify manifest: %w", err)
+		return fmt.Errorf("read existing bundle: %w", err)
 	}
-	if !exists {
-		return fmt.Errorf("verify manifest: value missing")
+	expected := etcdsource.ActiveCondition{
+		Generation:  plan.ExpectedActiveGeneration,
+		ModRevision: plan.ExpectedActiveModRevision,
+		Exists:      plan.ExpectedActiveExists,
 	}
-	fetchedManifest, err := bundle.ParseManifest([]byte(manifestValue))
-	if err != nil {
-		return fmt.Errorf("verify manifest: %w", err)
-	}
-	digest, err := bundle.VerifyFiles(fetchedManifest, fetched)
-	if err != nil || (!options.ActivateExisting && digest != local.digest) {
-		if err == nil {
-			err = fmt.Errorf("digest %q does not match local digest %q", digest, local.digest)
+	if !existing.Exists {
+		updated, err := kv.CreateBundleAndSwapActive(ctx, bundleKey, string(encoded), activeKey, plan.Generation, expected)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("verify immutable generation: %w", err)
+		if !updated {
+			return fmt.Errorf("remote state changed after publish plan")
+		}
+		return nil
 	}
-
-	updated, err := kv.PutIf(ctx, activeKey, options.Generation, expected, activeExists)
+	if existing.Data != string(encoded) {
+		return fmt.Errorf("content-addressed generation %q contains different data", plan.Generation)
+	}
+	updated, err := kv.SwapActive(ctx, activeKey, plan.Generation, expected)
 	if err != nil {
-		return fmt.Errorf("update active pointer: %w", err)
+		return err
 	}
 	if !updated {
-		return fmt.Errorf("active pointer changed during publication")
+		return fmt.Errorf("active pointer changed after publish plan")
 	}
 	return nil
 }
 
-func (o Options) validate() error {
-	if !bundle.SafeName(o.TargetID) {
-		return fmt.Errorf("target id %q is unsafe", o.TargetID)
+func Activate(ctx context.Context, kv KV, options ActivateOptions) error {
+	if err := validateTarget(options.TargetID); err != nil {
+		return err
 	}
-	if !bundle.SafeName(o.Generation) {
-		return fmt.Errorf("generation %q is unsafe", o.Generation)
+	if !bundle.SafeName(options.Generation) {
+		return fmt.Errorf("generation %q is unsafe", options.Generation)
 	}
-	if o.PreviousGeneration != "" && !bundle.SafeName(o.PreviousGeneration) {
-		return fmt.Errorf("previous generation %q is unsafe", o.PreviousGeneration)
+	if err := validateExpected(options.ExpectedActiveGeneration, options.Initial); err != nil {
+		return err
+	}
+	expected, err := captureActive(ctx, kv, options.TargetID, options.ExpectedActiveGeneration, options.Initial)
+	if err != nil {
+		return err
+	}
+	if expected.ModRevision != options.ExpectedActiveModRevision {
+		return fmt.Errorf("active pointer ModRevision is %d, expected %d", expected.ModRevision, options.ExpectedActiveModRevision)
+	}
+	bundleKey := etcdsource.BundleKey(options.TargetID, options.Generation)
+	value, err := kv.Get(ctx, bundleKey)
+	if err != nil {
+		return fmt.Errorf("read existing bundle: %w", err)
+	}
+	if !value.Exists {
+		return fmt.Errorf("generation %q does not exist", options.Generation)
+	}
+	manifest, files, digest, err := bundle.Decode([]byte(value.Data))
+	if err != nil {
+		return fmt.Errorf("decode existing bundle: %w", err)
+	}
+	if err := bundle.ValidateGeneration(options.Generation, digest); err != nil {
+		return err
+	}
+	if len(manifest.Pairs) != 1 {
+		return fmt.Errorf("activate requires exactly one certificate pair")
+	}
+	pair := manifest.Pairs[0]
+	if _, err := bundle.ValidateKeyPair(files[pair.Certificate], files[pair.PrivateKey]); err != nil {
+		return err
+	}
+
+	updated, err := kv.SwapActive(ctx, etcdsource.ActiveKey(options.TargetID), options.Generation, expected)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return fmt.Errorf("active pointer changed during activation")
 	}
 	return nil
 }
 
-func readMaterial(options Options) (material, error) {
-	certificate, err := readFile(options.CertificatePath)
+func captureActive(ctx context.Context, kv KV, targetID, expectedGeneration string, initial bool) (etcdsource.ActiveCondition, error) {
+	value, err := kv.Get(ctx, etcdsource.ActiveKey(targetID))
 	if err != nil {
-		return material{}, fmt.Errorf("read certificate: %w", err)
+		return etcdsource.ActiveCondition{}, fmt.Errorf("read active pointer: %w", err)
 	}
-	privateKey, err := readFile(options.PrivateKeyPath)
-	if err != nil {
-		return material{}, fmt.Errorf("read private key: %w", err)
+	if initial {
+		if value.Exists {
+			return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer already exists with generation %q", value.Data)
+		}
+		return etcdsource.ActiveCondition{}, nil
 	}
-	if _, err := bundle.ValidateKeyPair(certificate, privateKey); err != nil {
-		return material{}, err
+	if !value.Exists {
+		return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer is missing; use --initial for first publication")
 	}
+	if value.Data != expectedGeneration {
+		return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer is %q, expected %q", value.Data, expectedGeneration)
+	}
+	if !bundle.SafeName(value.Data) {
+		return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer %q is unsafe", value.Data)
+	}
+	return etcdsource.ActiveCondition{
+		Generation:  value.Data,
+		ModRevision: value.ModRevision,
+		Exists:      true,
+	}, nil
+}
 
-	files := map[string][]byte{"fullchain.pem": certificate, "privkey.pem": privateKey}
-	manifest := bundle.Manifest{
-		Schema: bundle.SchemaV1,
-		Files: []bundle.ManifestFile{
-			{Name: "fullchain.pem", Kind: bundle.KindCertificate, SHA256: hash(certificate)},
-			{Name: "privkey.pem", Kind: bundle.KindPrivateKey, SHA256: hash(privateKey)},
-		},
-		Pairs: []bundle.Pair{{Certificate: "fullchain.pem", PrivateKey: "privkey.pem"}},
-	}
-	digest, err := bundle.VerifyFiles(manifest, files)
+func readMaterial(certificatePath, privateKeyPath string) (localMaterial, string, string, error) {
+	certificate, err := readFile(certificatePath)
 	if err != nil {
-		return material{}, err
+		return localMaterial{}, "", "", fmt.Errorf("read certificate: %w", err)
 	}
-	return material{manifest: manifest, files: files, digest: digest}, nil
+	privateKey, err := readFile(privateKeyPath)
+	if err != nil {
+		return localMaterial{}, "", "", fmt.Errorf("read private key: %w", err)
+	}
+	manifest, digest := bundle.NewTLSManifest(certificate, privateKey, certificateName, privateKeyName)
+	return localMaterial{
+		manifest: manifest,
+		files:    map[string][]byte{certificateName: certificate, privateKeyName: privateKey},
+		digest:   digest,
+	}, absoluteForPlan(certificatePath), absoluteForPlan(privateKeyPath), nil
+}
+
+func validateMaterial(material localMaterial) error {
+	_, err := bundle.ValidateKeyPair(material.files[certificateName], material.files[privateKeyName])
+	return err
 }
 
 func readFile(path string) ([]byte, error) {
+	if path == "" {
+		return nil, fmt.Errorf("path is empty")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxFileBytes {
-		return nil, fmt.Errorf("size %d exceeds %d bytes", len(data), maxFileBytes)
-	}
 	return data, nil
+}
+
+func absoluteForPlan(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return absolute
+}
+
+func validateTarget(targetID string) error {
+	if !bundle.SafeName(targetID) {
+		return fmt.Errorf("target id %q is unsafe", targetID)
+	}
+	return nil
+}
+
+func validateExpected(expectedGeneration string, initial bool) error {
+	if initial == (expectedGeneration != "") {
+		return fmt.Errorf("specify exactly one of --initial or --expected-active-generation")
+	}
+	if expectedGeneration != "" && !bundle.SafeName(expectedGeneration) {
+		return fmt.Errorf("expected active generation %q is unsafe", expectedGeneration)
+	}
+	return nil
 }
 
 func hash(value []byte) string {
 	sum := sha256.Sum256(value)
 	return hex.EncodeToString(sum[:])
-}
-
-func cleanRoot(value string) string {
-	if value == "" {
-		return "/pemcast/v1"
-	}
-	return path.Clean("/" + strings.Trim(value, "/"))
-}
-
-func activeKey(rootPrefix, targetID string) string {
-	return path.Join(rootPrefix, "active", targetID)
-}
-
-func bundleRoot(rootPrefix, targetID, generation string) string {
-	return path.Join(rootPrefix, "bundles", targetID, generation)
-}
-
-func pointerValue(exists bool, value string) string {
-	if !exists {
-		return "<missing>"
-	}
-	return value
 }
