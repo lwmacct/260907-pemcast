@@ -12,3 +12,5 @@ description: "配置和运行 pemcast, 用 publish plan/apply/activate 发布或
 - 涉及生产部署或 etcd mutation 时, 先确认确切目标环境和请求的变更. 优先使用 `agent --once --dry-run` 作为非写入验证步骤.
 
 v2 新 bundle 与 active pointer 必须在同一个 etcd transaction 中提交. 每个 output root 或 target set 只保持一个 agent 进程执行 reconcile.
+
+应用容器必须挂载完整 output root, 不能挂载 `current`, `current` 下的文件或 Kubernetes subPath. 现阶段不向 etcd 回报设备状态.

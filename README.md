@@ -98,6 +98,39 @@ pemcast --config config/config.yaml agent
 /etc/nginx/tls/current/privkey.pem
 ```
 
+## 容器部署契约
+
+pemcast 是 node-level agent. 推荐每台设备运行一个 agent, 由它统一管理本机证书 output root 并执行本机 reload hook. 应用容器只需要以只读方式挂载完整的 output root:
+
+```bash
+docker run \
+  -v /var/lib/pemcast/nginx:/etc/nginx/tls:ro \
+  gateway-image
+```
+
+应用读取:
+
+```text
+/etc/nginx/tls/current/fullchain.pem
+/etc/nginx/tls/current/privkey.pem
+```
+
+必须挂载 output root 本身, 不能挂载 `current`, `current/fullchain.pem` 或 `current/privkey.pem`. Kubernetes 中也不要用 subPath 指向 `current`. 否则 container runtime 可能在启动时固定旧 release, pemcast 后续切换 symlink 时应用看不到新证书.
+
+同一台设备上多个容器可以使用同一个 output root. 它们都挂载 root, 并由一个本机 fan-out hook 统一重载:
+
+```bash
+#!/bin/sh
+set -eu
+
+docker exec gateway nginx -s reload
+docker kill --signal=HUP api
+```
+
+hook 是本机服务控制适配器, 必须运行在有权限控制目标服务的位置. 如果 pemcast 以容器方式运行, 它需要挂载 output root, hook 以及对应的容器 runtime 控制接口. 挂载 Docker socket 或 Podman socket 等价于高权限, 只应部署在受信任的 node agent 容器中.
+
+pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hook retry 和 `pemcast status` 诊断, 设备离线后重新上线会继续从 etcd 收敛到 active generation.
+
 配置会拒绝重复或祖先/后代重叠的 output root. 同一个 root 的第二个 agent 进程会因文件锁立即失败.
 
 ## Hook 契约

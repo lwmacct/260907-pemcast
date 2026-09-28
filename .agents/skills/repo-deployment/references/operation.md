@@ -30,18 +30,129 @@ pemcast --config /etc/pemcast/config.yaml agent
 
 使用失败自动重启的 supervisor, 并用 `SIGTERM` 或 `SIGINT` 停止. 除非有意在首启同步, state 和 output path 都应持久化.
 
-container 示例:
+## 容器部署拓扑
+
+### 推荐拓扑: host-level agent
+
+在设备 host 上运行 pemcast agent, 输出 root 使用 host path:
+
+```text
+/var/lib/pemcast/nginx/
+├── current -> .pemcast/releases/sha256-...
+└── .pemcast/
+```
+
+应用容器只读挂载完整 output root:
 
 ```bash
 docker run --rm \
-  -v /etc/pemcast/config.yaml:/app/data/config/config.yaml:ro \
-  -v /etc/nginx/tls:/etc/nginx/tls \
-  -v /var/lib/pemcast:/var/lib/pemcast \
-  ghcr.io/lwmacct/260907-pemcast:<tag> \
-  pemcast --config /app/data/config/config.yaml agent
+  -v /var/lib/pemcast/nginx:/etc/nginx/tls:ro \
+  nginx:latest
 ```
 
-如果 hook 必须影响 host, 使用 host 级 agent, 或显式挂载并授权一个可以跨越 container 边界工作的 hook.
+应用读取:
+
+```text
+/etc/nginx/tls/current/fullchain.pem
+/etc/nginx/tls/current/privkey.pem
+```
+
+挂载规则:
+
+- 正确: 挂载 output root, 例如 `/var/lib/pemcast/nginx:/etc/nginx/tls:ro`.
+- 错误: 挂载 `current`, 例如 `/var/lib/pemcast/nginx/current:/etc/nginx/tls`.
+- 错误: 挂载 `current` 下的单个文件.
+- 错误: Kubernetes subPath 指向 `current`.
+
+原因: 挂载 root 时, 应用每次 open 都会解析 `current` symlink. 直接挂载 `current` 或 subPath 时, container runtime 可能在启动时固定旧 release, pemcast 后续切换 symlink 后应用看不到新证书.
+
+### 可选拓扑: node agent container
+
+如果 pemcast 必须以容器运行, 它应作为 node-level 控制组件, 而不是普通业务 sidecar:
+
+```bash
+docker run -d \
+  --name pemcast \
+  --restart unless-stopped \
+  -v /etc/pemcast/config.yaml:/etc/pemcast/config.yaml:ro \
+  -v /etc/pemcast/hooks:/etc/pemcast/hooks:ro \
+  -v /var/lib/pemcast:/var/lib/pemcast \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  <pemcast-image-with-docker-cli> \
+  pemcast agent --config /etc/pemcast/config.yaml
+```
+
+这个镜像必须包含 hook 所需的 runtime CLI, 例如 `docker` 或 `podman`. 挂载 Docker socket, Podman socket 或 containerd socket 等价于高权限, 只应用于受信任的 node agent. 如果不接受该权限模型, 请使用 host-level agent 或让应用自身支持证书 reload.
+
+### 受限拓扑: sidecar
+
+pemcast 也可以作为业务 Pod 的 sidecar, 与应用共享同一个 output root. 这个模式只适合 hook 能够控制同 Pod 内应用的场景:
+
+- 应用支持 file watcher 或 localhost reload API.
+- Pod 开启 shared process namespace, hook 可以向应用进程发送信号.
+- 应用和 pemcast 由同一个 supervisor 管理.
+
+如果 sidecar 没有上述控制通道, 它只能更新文件, 不能可靠地重载其他容器中的进程. 大规模设备场景应优先使用 host-level agent 或 node agent container.
+
+### 多消费者共享
+
+同一台设备上多个容器可以只读挂载同一个 output root:
+
+```bash
+docker run -v /var/lib/pemcast/nginx:/etc/nginx/tls:ro gateway
+docker run -v /var/lib/pemcast/nginx:/etc/api/tls:ro api
+```
+
+一个 fan-out hook 可以统一重载所有消费者. hook 是本机部署的一部分, 证书更新后由 pemcast 自动执行:
+
+```bash
+#!/bin/sh
+set -eu
+
+docker exec gateway nginx -s reload
+docker kill --signal=HUP api
+```
+
+如果消费者需要不同权限或不同重载策略, 为它们配置不同 target 和 output root.
+
+## Hook 示例
+
+systemd 服务:
+
+```bash
+#!/bin/sh
+exec systemctl reload nginx
+```
+
+Docker 容器:
+
+```bash
+#!/bin/sh
+exec docker exec gateway nginx -s reload
+```
+
+向 Docker 容器发送信号:
+
+```bash
+#!/bin/sh
+exec docker kill --signal=HUP api
+```
+
+Podman 容器:
+
+```bash
+#!/bin/sh
+exec podman exec gateway nginx -s reload
+```
+
+同容器 supervisor 模式:
+
+```bash
+#!/bin/sh
+exec kill -HUP 1
+```
+
+所有 hook 都必须幂等. 如果 hook 失败, pemcast 保留已启用的 release, 记录本地 hook error, 并在下一次事件或 resync 时重试 hook. local state 只用于本机 retry 和诊断, 不向 etcd 回报设备状态.
 
 ## Hook 契约
 
