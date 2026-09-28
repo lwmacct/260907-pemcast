@@ -1,14 +1,14 @@
 ---
 name: repo-deployment
-description: "Configure and operate pemcast, publish or roll back etcd certificate bundles, run dry-run checks, and diagnose activation or reload-hook failures. Not for internal implementation changes."
+description: "配置和运行 pemcast, 发布或回滚 etcd certificate bundle, 执行 dry-run 校验, 诊断启用或 reload-hook 失败. 不用于内部实现修改."
 ---
 
-# pemcast deployment
+# pemcast 部署
 
-Use this skill for operator tasks. Select only the references needed by the request:
+运维任务使用此 skill. 只读取请求需要的 references:
 
-- For agent configuration, startup, container wiring, failure behavior, rollback, or cleanup, read [references/operation.md](references/operation.md).
-- For creating, publishing, verifying, or rolling back a certificate generation in etcd, read [references/publishing.md](references/publishing.md).
-- For a live deployment or etcd mutation, first confirm the exact target environment and requested change. Prefer `agent --once --dry-run` as the non-mutating validation step.
+- agent 配置, 启动, container 接线, 失败行为, 回滚或清理: 阅读 [references/operation.md](references/operation.md).
+- 创建, 发布, 校验或回滚 etcd 中的 certificate generation: 阅读 [references/publishing.md](references/publishing.md).
+- 涉及生产部署或 etcd mutation 时, 先确认确切目标环境和请求的变更. 优先使用 `agent --once --dry-run` 作为非写入验证步骤.
 
-Never move the active pointer until the complete immutable generation has been written and verified. Keep one agent process reconciling each output root or target set.
+完整 immutable generation 写入并校验前, 绝不移动 active pointer. 每个 output root 或 target set 只保持一个 agent 进程执行 reconcile.

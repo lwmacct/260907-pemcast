@@ -2,21 +2,15 @@
 
 pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent. 发布者先把完整的证书 generation 写入 etcd, 再切换 active 指针; pemcast 监听指针变化, 按 etcd revision 取回完整 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
 
-```text
-etcd publisher
-    │  write immutable bundle, then move active pointer
-    ▼
-pemcast agent
-    │  revision-pinned fetch + manifest/hash + X509KeyPair + validity
-    ▼
-<output.root>/.pemcast/releases/sha256-<digest>/
-    │  atomic symlink rename
-    ▼
-<output.root>/current/fullchain.pem
-<output.root>/current/privkey.pem
-    │  trusted local hook
-    ▼
-nginx or another certificate consumer
+```mermaid
+flowchart LR
+    publisher["etcd publisher"] -->|"写入 immutable bundle"| etcd[("etcd")]
+    etcd -->|"active pointer + revision"| agent["pemcast agent"]
+    agent -->|"按 revision 获取并校验"| release["immutable release"]
+    release -->|"原子切换 symlink"| current["current"]
+    current --> app["nginx 或其他证书消费者"]
+    agent -->|"JSON + 环境变量"| hook["可信本地 hook"]
+    hook --> app
 ```
 
 ## 设计要点

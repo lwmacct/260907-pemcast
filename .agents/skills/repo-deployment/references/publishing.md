@@ -1,6 +1,6 @@
-# Publish a pemcast bundle
+# 发布 pemcast bundle
 
-For target `nginx`, generation `01K4GENERATION`, and root `/pemcast/v1`:
+以 target `nginx`, generation `01K4GENERATION`, root `/pemcast/v1` 为例:
 
 ```text
 /pemcast/v1/active/nginx = 01K4GENERATION
@@ -9,9 +9,20 @@ For target `nginx`, generation `01K4GENERATION`, and root `/pemcast/v1`:
 /pemcast/v1/bundles/nginx/01K4GENERATION/files/privkey.pem
 ```
 
-Write and verify every bundle key before moving the pointer. Generations are immutable; use a new name for any content change.
+先写入并校验所有 bundle key, 最后移动 pointer. generation 不可变; 任何内容变化都使用新名字.
 
-Prepare the manifest:
+```mermaid
+flowchart TD
+    material["证书与私钥文件"] --> manifest["生成 manifest 与 SHA-256"]
+    manifest --> generation["写入 immutable generation"]
+    generation --> verify{"前缀读取与 digest 校验通过?"}
+    verify -->|"否"| stop["不移动 active pointer"]
+    verify -->|"是"| pointer["写入 active pointer"]
+    pointer --> dryrun["agent --once --dry-run"]
+    dryrun --> sync["agent --once 或 watch 模式"]
+```
+
+准备 manifest:
 
 ```bash
 TARGET=nginx
@@ -34,7 +45,7 @@ cat > manifest.json <<EOF
 EOF
 ```
 
-With `ETCDCTL_ENDPOINTS` and auth/TLS options set:
+设置 `ETCDCTL_ENDPOINTS` 和目标集群的 authentication/TLS 选项后执行:
 
 ```bash
 BUNDLE="$ROOT/bundles/$TARGET/$GENERATION"
@@ -44,9 +55,9 @@ etcdctl put "$BUNDLE/manifest.json" -- < manifest.json
 etcdctl get "$BUNDLE/" --prefix
 ```
 
-Confirm exact keys and digests. Each file must be at most 4 MiB, and fetched and declared file sets must match exactly.
+确认 key 集合和 digest 完全正确. 每个文件最大 4 MiB, 实际获取和声明的 file set 必须完全一致.
 
-Activate only after verification:
+校验完成后才能启用:
 
 ```bash
 OLD="$(etcdctl get "$ROOT/active/$TARGET" --print-value-only)"
@@ -57,13 +68,13 @@ else
 fi
 ```
 
-Then dry-run and synchronize:
+然后执行 dry-run 和同步:
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml agent --once --dry-run
 pemcast --config /etc/pemcast/config.yaml agent --once
 ```
 
-Rollback is another pointer move to a complete immutable old generation. Identical content resolves to the same digest and may not rewrite or invoke a hook.
+回滚就是把 pointer 移回另一个完整的 immutable 旧 generation. 相同内容会解析到同一个 digest, 因此可能不会重写本地文件或触发 hook.
 
-Publisher obligations: never mutate an exposed generation, keep old generations for rollback, hash exact bytes, store credentials securely, and move the pointer last.
+publisher 义务: 不修改已暴露的 generation, 保留旧 generation 用于回滚, 哈希精确 bytes, 安全保存凭据, 最后移动 pointer.

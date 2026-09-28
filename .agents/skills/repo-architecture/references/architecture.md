@@ -1,29 +1,57 @@
-# pemcast architecture
+# pemcast 架构
 
-## Positioning
+## 定位
 
-pemcast is a pull-only certificate agent. A publisher stores complete immutable certificate generations in etcd and moves an active pointer only after a generation is ready. Each process reads pointers for configured targets, validates material, materializes a local immutable release, and switches one stable symlink. Reload is delegated to a trusted hook.
+pemcast 是一个 pull-only certificate agent. 发布者先把完整的 immutable certificate generation 写入 etcd, 只有 generation 准备好后才移动 active pointer. 每个 agent 进程读取已配置 target 的 pointer, 校验材料, 在本地物化一个 immutable release, 并切换一个稳定的 symlink. 服务重载交给可信 hook 处理.
 
-There is no bundled publisher, lease manager, service-control integration, or HTTP API.
+仓库没有内置 publisher, lease manager, service-control integration 或 HTTP API.
 
-## Runtime flow
+## 运行流程
 
-Startup validates configuration, creates the state directory, constructs the etcd client, and assembles the reconcile controller. State creation currently does not acquire a cross-process lock.
+启动时校验配置, 创建 state directory, 构造 etcd client, 并组装 reconcile controller. 当前 state 创建不会获取跨进程锁.
 
-`agent --once` takes one active-pointer snapshot and reconciles every configured target.
+`agent --once` 读取一个 active-pointer snapshot, 并 reconcile 所有已配置 target.
 
-Normal agent mode loops:
+普通 agent 模式循环执行:
 
-1. Read all active pointers and record the etcd revision.
-2. Reconcile the snapshot concurrently.
-3. Watch active pointers from `snapshot.Revision + 1`.
-4. Handle relevant puts and deletes.
-5. Restart from a fresh snapshot at each `resync-interval`.
-6. Retry snapshot/watch failures with bounded exponential delay and jitter.
+1. 读取所有 active pointer, 并记录 etcd revision.
+2. 并发 reconcile snapshot.
+3. 从 `snapshot.Revision + 1` 开始 watch active pointer.
+4. 处理相关 put 和 delete.
+5. 每到达 `resync-interval` 就放弃当前 watch, 从新 snapshot 重启.
+6. snapshot/watch 失败时使用有界指数退避和 jitter 重试.
 
-Individual reconcile failures in watch mode are logged and do not stop the process.
+watch 模式中的单个 reconcile 失败会记录日志, 不会停止进程.
 
-## Remote model
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as etcd
+    participant A as agent
+    participant C as controller
+    participant D as deployer
+    participant H as hook
+    participant S as state
+
+    E->>A: active snapshot / watch event
+    A->>C: reconcile target
+    C->>E: 按 revision 获取 bundle
+    E-->>C: manifest + files
+    C->>C: digest, X509KeyPair 与 validity 校验
+    alt dry-run
+        C-->>A: 校验成功, 不写入
+    else 正常启用
+        C->>D: Activate(material)
+        D->>D: staging, fsync, rename release
+        D->>D: 原子切换 current symlink
+        D-->>C: release 与 current 路径
+        C->>H: 直接执行 trusted hook
+        H-->>C: 成功或失败
+        C->>S: 原子保存 target state
+    end
+```
+
+## 远端模型
 
 ```text
 <root>/active/<target-id> = <generation>
@@ -31,31 +59,31 @@ Individual reconcile failures in watch mode are logged and do not stop the proce
 <root>/bundles/<target-id>/<generation>/files/<file-name>
 ```
 
-Target IDs, generations, and file names are one safe path component, at most 128 bytes, and use alphanumerics or a non-leading `.`, `_`, or `-`. Bundles are fetched at the snapshot/event revision. Unknown keys, missing manifests, unsafe names, and files over 4 MiB are rejected.
+target ID, generation 和 file name 都必须是一个安全 path component, 最长 128 bytes, 只能使用字母数字, 或非开头的 `.`, `_`, `-`. bundle 按 snapshot 或 event revision 获取. unknown key, 缺失 manifest, 不安全 name 和超过 4 MiB 的文件都会被拒绝.
 
-Manifest decoding rejects unknown members. It requires schema `pemcast/v1`, unique safe file names with lowercase SHA-256 values, and pairs referencing declared files. The fetched file set must exactly equal the declared set. `kind` is not semantically validated.
+manifest 解码会拒绝 unknown member. 它要求 schema 为 `pemcast/v1`, file name 唯一且安全, SHA-256 为小写, pair 引用已声明文件. 实际获取的 file set 必须与声明集合完全一致. `kind` 当前没有语义校验.
 
-The whole-bundle digest hashes raw per-file SHA-256 values in manifest-name order, with each name and a NUL byte before its digest. Local release names use that digest.
+whole-bundle digest 按 manifest name 顺序, 把每个 file name, 一个 NUL byte 和该文件的 raw SHA-256 写入 hasher. 本地 release name 使用这个 digest.
 
-## Reconciliation
+## Reconcile
 
-For each target:
+每个 target 执行:
 
-1. Serialize the target with its in-process mutex.
-2. Acquire a global concurrency slot.
-3. Fetch the bundle at the event revision.
-4. Validate the configured certificate/key pair, leaf validity, and declared pair.
-5. Load state.
-6. Stop before writes in dry-run mode.
-7. Activate only when the selected local digest differs.
-8. Run the hook after activation or to retry a recorded hook failure.
-9. Atomically save state.
+1. 用进程内 mutex 串行化该 target.
+2. 获取全局 concurrency slot.
+3. 按 event revision 获取 bundle.
+4. 校验已配置 certificate/key pair, leaf validity 和声明的 pair.
+5. 加载 state.
+6. dry-run 模式在任何写入前停止.
+7. 只在本地选中的 digest 不同 时激活.
+8. 在激活后运行 hook, 或重试已记录的 hook failure.
+9. 原子保存 state.
 
-Different targets can run concurrently. A configured target absent from a snapshot uses `delete-policy`: `retain` keeps local files and logs, while `fail` returns an error. pemcast never deletes local targets automatically.
+不同 target 可以并发执行. snapshot 中缺失的已配置 target 按 `delete-policy` 处理: `retain` 保留本地文件并记录日志, `fail` 返回错误. pemcast 永远不会自动删除本地 target.
 
-## Local activation
+## 本地启用
 
-For `/etc/nginx/tls`:
+以 `/etc/nginx/tls` 为例:
 
 ```text
 /etc/nginx/tls/
@@ -65,29 +93,29 @@ For `/etc/nginx/tls`:
     └── sha256-active/
 ```
 
-A release is staged, populated with configured mappings and modes, marked with `.pemcast-digest`, fsynced, renamed into place, then selected by atomic symlink rename. The active release is never pruned. `retain-releases` controls only additional inactive releases.
+release 先写入 staging directory, 按配置 mappings 和 modes 填充, 写入 `.pemcast-digest`, fsync, rename 到最终 immutable release name, 再通过临时 symlink 的原子 rename 切换. active release 永远不会被 prune. `retain-releases` 只控制额外的 inactive release 数量.
 
-Distinct generations with identical content map to one digest and one release.
+内容相同的不同 generation 会映射到同一个 digest 和 release.
 
-## Hooks and state
+## Hook 与 state
 
-Hooks execute directly without a shell, receive selected environment variables, and get one JSON event on stdin. Timeout is bounded. stdout and stderr are combined and included, truncated to 4096 bytes, on failure.
+hook 直接执行, 不经过 shell. 它接收选定的环境变量, 并从 stdin 获取一个 JSON event. timeout 有上界. 失败时 stdout 和 stderr 会合并, 截断到 4096 bytes 后包含在错误中.
 
-The hook runs after the symlink switch. Failure records `hook-error`; later events or resyncs retry without rewriting the unchanged release. If the process stops between activation and state save, the hook can run again, so hooks must be idempotent.
+hook 在 symlink 切换后运行. 失败会记录 `hook-error`; 后续 event 或 resync 会重试, 且不会重写未变化的 release. 如果进程在激活和 state 保存之间停止, hook 可能再次运行, 因此 hook 必须幂等.
 
-State is a small JSON file below `state-dir`, written by temporary file, fsync, rename, and parent-directory fsync.
+state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, rename 和 parent-directory fsync 写入.
 
-## Package map
+## 包地图
 
-- `cmd/pemcast`: CLI entry and signal context.
-- `internal/appcmd/agent`: application assembly and once/watch lifecycle.
-- `internal/appcmd/config`: config example and validation commands.
-- `internal/config`: schema, defaults, modes, validation, cfgm integration.
-- `internal/etcdsource`: etcd client, snapshot, watch, revision-pinned fetch.
-- `internal/bundle`: manifest, digests, TLS key pair, validity.
-- `internal/reconcile`: orchestration, locks, concurrency, hook retry.
-- `internal/deploy`: immutable releases, atomic symlink, pruning, fsync.
-- `internal/hook`: trusted direct execution and event schema.
-- `internal/state`: durable activation and hook state.
+- `cmd/pemcast`: CLI 入口和 signal context.
+- `internal/appcmd/agent`: application 组装与 once/watch 生命周期.
+- `internal/appcmd/config`: config example 和校验命令.
+- `internal/config`: schema, defaults, mode, validation 和 cfgm 集成.
+- `internal/etcdsource`: etcd client, snapshot, watch 和 revision-pinned fetch.
+- `internal/bundle`: manifest, digest, TLS key pair 和 validity.
+- `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
+- `internal/deploy`: immutable release, 原子 symlink, prune 和 fsync.
+- `internal/hook`: 可信直接执行与 event schema.
+- `internal/state`: 持久 activation 和 hook state.
 
-Known boundaries: no cross-process lock, no direct etcdsource/reconcile tests, container supplies only the binary and example config, and publisher immutability is an external contract.
+已知边界: 没有跨进程锁, 没有直接的 etcdsource/reconcile 测试, container 只提供 binary 和 example config, publisher immutability 是外部契约.

@@ -1,14 +1,14 @@
 ---
 name: repo-architecture
-description: "Explain, review, or change pemcast architecture, package boundaries, synchronization invariants, or failure behavior. Not for routine deployment operations or test-only edits."
+description: "解释, 评审或修改 pemcast 的架构, 包边界, 同步不变量或失败行为. 不用于日常部署操作或纯测试修改."
 ---
 
-# pemcast architecture
+# pemcast 架构
 
-Use this skill when the task requires understanding why pemcast is designed this way or changing behavior that crosses package boundaries.
+当任务需要理解 pemcast 的设计原因, 或修改跨越包边界的行为时使用此 skill.
 
-1. Read [references/architecture.md](references/architecture.md) before explaining or modifying the design.
-2. Treat the etcd protocol and local activation invariants as contracts. If a requested change weakens one, state the consequence and propose a safer design.
-3. Verify architecture changes with focused package tests plus `go test ./...`. If `internal/reconcile` changes materially, add controller-level tests because that package currently has no direct tests.
+1. 解释或修改设计前, 先阅读 [references/architecture.md](references/architecture.md).
+2. 将 etcd 协议和本地启用不变量视为契约. 如果请求的修改会削弱其中一个, 明确说明后果并提出更安全的设计.
+3. 用相关包的针对性测试加 `go test ./...` 验证架构修改. 如果 `internal/reconcile` 发生实质变化, 补充 controller 级测试, 因为该包当前没有直接测试.
 
-Current operational constraint: there is no cross-process lock in the state store. Do not recommend running more than one agent process against the same output root or target set.
+当前运行约束: state store 没有跨进程锁. 不要建议对同一个 output root 或 target set 运行多个 agent 进程.

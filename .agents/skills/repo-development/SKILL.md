@@ -1,10 +1,10 @@
 ---
 name: repo-development
-description: "Modify, debug, or test pemcast's Go implementation while preserving its protocol, validation, atomic activation, and generated-config rules. Not for pure deployment operations."
+description: "修改, 调试或测试 pemcast 的 Go 实现, 同时保持协议, 校验, 原子启用和生成配置规则. 不用于纯部署操作."
 ---
 
-# pemcast development
+# pemcast 开发
 
-Use this skill for code and test changes. Read [references/development.md](references/development.md), then inspect the specific packages listed there before editing.
+代码和测试修改使用此 skill. 先阅读 [references/development.md](references/development.md), 再检查其中列出的相关包后动手.
 
-Minimum verification for Go changes is `go test ./...`. Configuration-schema changes must also regenerate and commit `config/config.example.yaml` through the existing config test.
+Go 修改的最低验证是 `go test ./...`. 配置 schema 修改还必须通过现有 config test 重新生成并提交 `config/config.example.yaml`.
