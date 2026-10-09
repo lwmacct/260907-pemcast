@@ -20,6 +20,50 @@ scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
 配置 etcd 访问, 每个消费者一个 target, output root, 安全 mappings, validation pair 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
 
+## etcd agent 和 publish 用户
+
+当 etcd 只服务 pemcast 时, 使用两组同名的用户和角色:
+
+```text
+agent   -> read /pemcast/ --prefix
+publish -> readwrite /pemcast/ --prefix
+```
+
+`agent` 供 node agent 长期使用, 只读远端状态. `publish` 供 `pemcast publish plan/apply/activate` 使用, 需要读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. root 只用于认证和用户管理, 不进入 pemcast 配置.
+
+使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent, publish 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
+
+```bash
+ETCDCTL_ENDPOINTS='https://etcd.example:2379' \
+bash .agents/skills/repo-deployment/scripts/init-rbac.sh
+```
+
+脚本会创建缺失的用户和角色, 补齐授权, 验证 agent 只读, publish 可读, 以及未认证读取被拒绝. 这个简化授权允许同一凭据读取所有 pemcast target 的证书 bundle. 它适用于专用 etcd; 如果未来 etcd 服务其他系统, 或不同节点必须只能读取部分 target, 再改为按 target 收窄权限.
+
+node agent 配置使用:
+
+```yaml
+agent:
+  etcd:
+    endpoints:
+      - https://etcd.example:2379
+    username: agent
+    password: "<agent-password>"
+```
+
+发布端配置使用:
+
+```yaml
+agent:
+  etcd:
+    endpoints:
+      - https://etcd.example:2379
+    username: publish
+    password: "<publish-password>"
+```
+
+使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcd.tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcd.tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
+
 ## 校验与启动
 
 ```bash
@@ -64,7 +108,7 @@ docker run --rm \
 - 错误: 挂载 `current` 下的单个文件.
 - 错误: Kubernetes subPath 指向 `current`.
 
-原因: 挂载 root 时, 应用每次 open 都会解析 `current` symlink. 直接挂载 `current` 或 subPath 时, container runtime 可能在启动时固定旧 release, pemcast 后续切换 symlink 后应用看不到新证书.
+原因: 挂载 root 时, 应用每次 open 都会解析 `current` symlink. 直接挂载 `current` 或 subPath 时, container runtime 可能在启动时固定旧 release, pemcast 后续切换 symlink 时应用看不到新证书.
 
 ### 可选拓扑: node agent container
 
@@ -113,7 +157,7 @@ docker exec gateway nginx -s reload
 docker kill --signal=HUP api
 ```
 
-如果消费者需要不同权限或不同重载策略, 为它们配置不同 target 和 output root.
+如果消费者需要不同权限或不同重载策略, 为它们配置不同 target 和不同 output root.
 
 ## Hook 示例
 
@@ -171,7 +215,7 @@ PEMCAST_BUNDLE_SHA256
 
 stdin 中的 JSON 使用 `target-id`, `generation`, `previous-generation`, `etcd-revision`, `release-dir`, `current-dir`, `changed-files`, `bundle-sha256` 和 `activated-at` 字段. hook 在启用后运行, 必须幂等.
 
-hook 默认只获得固定 `PATH` 和 `PEMCAST_*` 变量. `hook.pass-environment` 是显式放行的现有环境变量名列表. hook 输出收集上限为 4096 bytes, timeout 会终止整个 process group.
+hook 默认只获得固定 `PATH` 和 `PEMCAST_*` 事件变量. `hook.pass-environment` 是显式放行的现有环境变量名列表. hook 输出收集上限为 4096 bytes, timeout 会终止整个 process group.
 
 ## 诊断
 

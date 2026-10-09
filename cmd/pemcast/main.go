@@ -13,7 +13,7 @@ import (
 
 	agentcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/agent"
 	configcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/config"
-	publishercmd "github.com/lwmacct/260907-pemcast/internal/appcmd/publisher"
+	publishcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/publish"
 	statuscmd "github.com/lwmacct/260907-pemcast/internal/appcmd/status"
 	"github.com/lwmacct/260907-pemcast/internal/config"
 )
@@ -25,7 +25,7 @@ func main() {
 		Name:     config.AppName,
 		Usage:    "distribute TLS certificate files from etcd and run local reload hooks",
 		Version:  version.AppVersion,
-		Commands: []*cli.Command{agentcmd.Command, configcmd.Command, publishercmd.Command, statuscmd.Command, version.Command},
+		Commands: []*cli.Command{agentcmd.Command, configcmd.Command, publishcmd.Command, statuscmd.Command, version.Command},
 	}
 	config.Manager.MustConfigure(app)
 	if err := app.Run(ctx, os.Args); err != nil {

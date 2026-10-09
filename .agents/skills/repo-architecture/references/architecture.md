@@ -176,7 +176,7 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `cmd/pemcast`: CLI 入口和 signal context.
 - `internal/appcmd/agent`: application 组装, output lock 与 once/watch 生命周期.
 - `internal/appcmd/config`: config example 和校验命令.
-- `internal/appcmd/publisher`: `publish plan/apply/activate` CLI.
+- `internal/appcmd/publish`: `publish plan/apply/activate` CLI adapter.
 - `internal/appcmd/status`: 本地状态 CLI.
 - `internal/config`: schema, defaults, validation 和 cfgm 集成.
 - `internal/etcdsource`: 固定 v2 root, exact-key snapshot/watch/fetch, atomic transaction.
@@ -185,7 +185,7 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
 - `internal/hook`: process group, 环境边界, 输出限额和 event schema.
 - `internal/state`: activation/hook state.
-- `internal/publisher`: publish plan, atomic apply 和 activate 状态机.
+- `internal/publisher`: publisher 领域逻辑, 包含 publish plan, atomic apply 和 activate 状态机.
 - `internal/status`: 只读本地 target 状态.
 
 已知边界: snapshot/watch 与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.
