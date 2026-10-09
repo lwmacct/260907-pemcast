@@ -29,7 +29,7 @@ agent   -> read /pemcast/ --prefix
 publish -> readwrite /pemcast/ --prefix
 ```
 
-`agent` 供 node agent 长期使用, 只读远端状态. `publish` 供 `pemcast publish plan/apply/activate` 使用, 需要读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. root 只用于认证和用户管理, 不进入 pemcast 配置.
+`agent` 供 node agent 长期使用, 只读远端状态. `publish` 供 `pemcast publish inspect/plan/apply/activate` 使用, 需要读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. root 只用于认证和用户管理, 不进入 pemcast 配置.
 
 使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent, publish 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
 

@@ -18,7 +18,37 @@ import (
 var Command = &cli.Command{
 	Name:     "publish",
 	Usage:    "create and activate immutable content-addressed certificate generations",
-	Commands: []*cli.Command{planCommand, applyCommand, activateCommand},
+	Commands: []*cli.Command{inspectCommand, planCommand, applyCommand, activateCommand},
+}
+
+var inspectCommand = &cli.Command{
+	Name:  "inspect",
+	Usage: "inspect the remote active pointer without changing it",
+	Flags: []cli.Flag{
+		&cli.StringFlag{Name: "target", Usage: "target ID", Required: true},
+	},
+	Action: func(ctx context.Context, command *cli.Command) error {
+		cfg, err := loadConfig(ctx, command)
+		if err != nil {
+			return err
+		}
+		client, err := etcdsource.New(cfg.Agent.Etcd)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = client.Close() }()
+
+		state, err := publisher.Inspect(ctx, client, command.String("target"))
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(state)
+		if err != nil {
+			return fmt.Errorf("encode active state: %w", err)
+		}
+		_, err = fmt.Fprintln(os.Stdout, string(data))
+		return err
+	},
 }
 
 var planCommand = &cli.Command{

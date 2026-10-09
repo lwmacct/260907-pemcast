@@ -46,6 +46,6 @@ go test ./internal/config
 go build ./cmd/pemcast
 ```
 
-GitHub publish workflow 会构建 static linux/amd64 binary, 注入 version 变量, 用 UPX 压缩, 校验 version, 构建并推送 GHCR image, 然后可能执行部署. 它与证书 `publisher` CLI 无关. 不要手工编辑生成的 version metadata.
+GitHub publish workflow 会构建 static linux/amd64 binary, 注入 version 变量, 用 UPX 压缩, 校验 version, 构建并推送 GHCR image. 它与证书 `publisher` CLI 无关. 不要手工编辑生成的 version metadata.
 
 交付前对已修改 Go 文件运行 `gofmt`, 开发中运行针对性测试, 最后运行 `go test ./...`, 检查受影响的 CLI/config 行为和生成配置变化. 协议或部署行为变化要同步更新对应 skill reference 与 README.

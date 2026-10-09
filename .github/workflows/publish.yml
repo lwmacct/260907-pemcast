@@ -197,10 +197,3 @@ jobs:
               echo "- \`${_tag}\`"
             done <<< "${IMAGE_TAGS}"
           } >> "${GITHUB_STEP_SUMMARY}"
-
-  deploy:
-    needs: build-image
-    uses: ./.github/workflows/deploy.yml
-    with:
-      source-tag: ${{ inputs.source-tag }}
-    secrets: inherit

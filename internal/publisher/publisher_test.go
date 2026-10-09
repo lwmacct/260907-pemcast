@@ -129,6 +129,38 @@ func TestCreatePlanRequiresExplicitExpectedState(t *testing.T) {
 	require.ErrorContains(t, err, "exactly one of --initial or --expected-active-generation")
 }
 
+func TestInspectReportsActivePointer(t *testing.T) {
+	kv := &fakeKV{values: map[string]etcdsource.Value{
+		etcdsource.ActiveKey("nginx"): {Data: "sha256-current", ModRevision: 42, Exists: true},
+	}}
+
+	state, err := Inspect(t.Context(), kv, "nginx")
+	require.NoError(t, err)
+	require.Equal(t, ActiveState{
+		TargetID: "nginx",
+		Active:   Active{Exists: true, Generation: "sha256-current", ModRevision: 42},
+	}, state)
+}
+
+func TestInspectReportsMissingPointer(t *testing.T) {
+	kv := &fakeKV{values: map[string]etcdsource.Value{}}
+
+	state, err := Inspect(t.Context(), kv, "nginx")
+	require.NoError(t, err)
+	require.False(t, state.Active.Exists)
+	require.Empty(t, state.Active.Generation)
+	require.Zero(t, state.Active.ModRevision)
+}
+
+func TestInspectRejectsUnsafePointer(t *testing.T) {
+	kv := &fakeKV{values: map[string]etcdsource.Value{
+		etcdsource.ActiveKey("nginx"): {Data: "../unsafe", ModRevision: 42, Exists: true},
+	}}
+
+	_, err := Inspect(t.Context(), kv, "nginx")
+	require.ErrorContains(t, err, `active pointer "../unsafe" is unsafe`)
+}
+
 func TestCreatePlanRejectsUnexpectedActiveGeneration(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	kv := &fakeKV{values: map[string]etcdsource.Value{

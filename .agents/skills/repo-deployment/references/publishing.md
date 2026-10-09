@@ -43,7 +43,14 @@ pemcast --config /etc/pemcast/config.yaml publish apply \
 
 ## 后续发布
 
-先获取当前 active generation. 可以从 `pemcast status --json` 的本地 state 或受控 etcd 只读命令获得, 然后显式写入计划:
+先用只读命令获取当前 active generation 和 ModRevision:
+
+```bash
+pemcast --config /etc/pemcast/config.yaml publish inspect \
+  --target nginx
+```
+
+然后显式写入计划:
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml publish plan \
@@ -89,8 +96,8 @@ Then Put complete bundle
 回滚不重写 bundle. 先取得当前 active generation 和 active key ModRevision:
 
 ```bash
-etcdctl get /pemcast/v2/active/nginx --write-out=json |
-  jq -r '.kvs[0].mod_revision, (.kvs[0].value | @base64d)'
+pemcast --config /etc/pemcast/config.yaml publish inspect \
+  --target nginx
 ```
 
 然后执行:

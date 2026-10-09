@@ -15,7 +15,7 @@ flowchart LR
 
 ## 设计要点
 
-- 证书发布者与消费者解耦: pemcast 不包含签发或审批系统, 但提供安全 `publish plan/apply/activate` 命令.
+- 证书发布者与消费者解耦: pemcast 不包含签发或审批系统, 但提供安全 `publish inspect/plan/apply/activate` 命令.
 - 远端 generation 内容寻址: generation 由完整 bundle digest 计算, 相同内容天然相同, 内容变化必然得到新名字.
 - 校验发生在启用前: manifest 严格解析, 文件逐一校验 SHA-256, 证书和私钥必须通过 `tls.X509KeyPair`, 并满足有效期策略.
 - 本地发布是内容寻址的: release 目录名来自整个 bundle 的 digest, 相同内容不会重复写入. 复用 release 前会校验 marker, 文件内容, mode 和目录树.
@@ -45,7 +45,26 @@ pemcast --config config/config.yaml config validate
 /pemcast/v2/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
-先生成显式发布计划. 首次发布使用 `--initial`; 后续发布必须声明当前 active generation:
+先用只读命令查看远端 active pointer:
+
+```bash
+pemcast --config config/config.yaml publish inspect --target nginx
+```
+
+输出为机器可读 JSON:
+
+```json
+{
+  "target-id": "nginx",
+  "active": {
+    "exists": true,
+    "generation": "sha256-current",
+    "mod-revision": 123
+  }
+}
+```
+
+再生成显式发布计划. 首次发布使用 `--initial`; 后续发布必须声明当前 active generation:
 
 ```bash
 pemcast --config config/config.yaml publish plan \
@@ -133,6 +152,47 @@ pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hoo
 
 配置会拒绝重复或祖先/后代重叠的 output root. 同一个 root 的第二个 agent 进程会因文件锁立即失败.
 
+## CI 中直接运行 publisher
+
+发布产物是公开的 standard OCI/Docker image, linux/amd64 二进制固定位于 `/usr/local/bin/pemcast`. GitHub Actions 已有 Docker 服务, 证书签发 workflow 不需要提取二进制, 也不需要额外安装 Go, ORAS 或配置 GHCR 凭据:
+
+```bash
+_image="ghcr.io/lwmacct/260907-pemcast:v0.3.261009"
+_work="$(mktemp -d)"
+
+docker run --rm --platform linux/amd64 \
+  -e PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
+  -e PEMCAST_AGENT_ETCD_USERNAME='publish' \
+  -e PEMCAST_AGENT_ETCD_PASSWORD='...' \
+  "${_image}" \
+  pemcast publish inspect --target nginx
+
+docker run --rm --platform linux/amd64 \
+  --volume "${CERTBOT_OUTPUT_DIR}/cert:/certs:ro" \
+  --volume "${_work}:/work" \
+  -e PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
+  -e PEMCAST_AGENT_ETCD_USERNAME='publish' \
+  -e PEMCAST_AGENT_ETCD_PASSWORD='...' \
+  "${_image}" \
+  pemcast publish plan \
+    --target nginx \
+    --certificate /certs/fullchain.pem \
+    --private-key /certs/privkey.pem \
+    --expected-active-generation sha256-current \
+    --output /work/release-plan.json
+
+docker run --rm --platform linux/amd64 \
+  --volume "${CERTBOT_OUTPUT_DIR}/cert:/certs:ro" \
+  --volume "${_work}:/work" \
+  -e PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
+  -e PEMCAST_AGENT_ETCD_USERNAME='publish' \
+  -e PEMCAST_AGENT_ETCD_PASSWORD='...' \
+  "${_image}" \
+  pemcast publish apply --plan /work/release-plan.json
+```
+
+plan 会记录容器内 `/certs/...` 绝对路径, 因此 `plan` 和 `apply` 必须使用相同的证书挂载点. 使用 exact version tag 或 digest. 如 etcd 使用 mTLS, 同时挂载 CA/client cert/key 并通过 `PEMCAST_AGENT_ETCD_TLS_*` 环境变量传入容器内路径.
+
 ## Hook 契约
 
 配置的可执行文件会在启用后直接运行, 不经过 shell. 它会从 stdin 接收一个 JSON 事件, 并获得以下环境变量:
@@ -160,6 +220,7 @@ pemcast agent --once
 pemcast agent --once --dry-run
 pemcast config example
 pemcast config validate
+pemcast publish inspect
 pemcast publish plan
 pemcast publish apply
 pemcast publish activate

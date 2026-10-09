@@ -38,6 +38,17 @@ type PlanOptions struct {
 	Initial                  bool
 }
 
+type ActiveState struct {
+	TargetID string `json:"target-id"`
+	Active   Active `json:"active"`
+}
+
+type Active struct {
+	Exists      bool   `json:"exists"`
+	Generation  string `json:"generation"`
+	ModRevision int64  `json:"mod-revision"`
+}
+
 type Plan struct {
 	Schema                    string `json:"schema"`
 	TargetID                  string `json:"target-id"`
@@ -50,6 +61,27 @@ type Plan struct {
 	ExpectedActiveGeneration  string `json:"expected-active-generation,omitempty"`
 	ExpectedActiveModRevision int64  `json:"expected-active-mod-revision"`
 	ExpectedActiveExists      bool   `json:"expected-active-exists"`
+}
+
+func Inspect(ctx context.Context, kv KV, targetID string) (ActiveState, error) {
+	if err := validateTarget(targetID); err != nil {
+		return ActiveState{}, err
+	}
+	value, err := kv.Get(ctx, etcdsource.ActiveKey(targetID))
+	if err != nil {
+		return ActiveState{}, fmt.Errorf("read active pointer: %w", err)
+	}
+	if value.Exists && !bundle.SafeName(value.Data) {
+		return ActiveState{}, fmt.Errorf("active pointer %q is unsafe", value.Data)
+	}
+	return ActiveState{
+		TargetID: targetID,
+		Active: Active{
+			Exists:      value.Exists,
+			Generation:  value.Data,
+			ModRevision: value.ModRevision,
+		},
+	}, nil
 }
 
 type ActivateOptions struct {
