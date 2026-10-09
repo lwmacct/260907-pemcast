@@ -75,9 +75,6 @@ func Publish(ctx context.Context, kv KV, result pack.Result) (Outcome, error) {
 	if !updated {
 		return "", fmt.Errorf("active pointer changed during publication; retry with the same pack")
 	}
-	if err := requireActive(ctx, kv, metadata.ActiveKey, metadata.Generation); err != nil {
-		return "", err
-	}
 	return OutcomePublished, nil
 }
 
@@ -108,15 +105,4 @@ func captureActive(ctx context.Context, kv KV, key string) (etcdsource.ActiveCon
 		ModRevision: value.ModRevision,
 		Exists:      value.Exists,
 	}, nil
-}
-
-func requireActive(ctx context.Context, kv KV, key, generation string) error {
-	value, err := kv.Get(ctx, key)
-	if err != nil {
-		return fmt.Errorf("read back active pointer: %w", err)
-	}
-	if !value.Exists || value.Data != generation {
-		return fmt.Errorf("active pointer read-back does not match generation %q", generation)
-	}
-	return nil
 }

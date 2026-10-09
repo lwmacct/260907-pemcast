@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/lwmacct/251207-go-pkg-cfgm/pkg/cfgm"
 	"github.com/urfave/cli/v3"
@@ -34,19 +33,7 @@ var Command = &cli.Command{
 			Name:  "validate",
 			Usage: "load and validate the effective agent configuration",
 			Action: func(ctx context.Context, command *cli.Command) error {
-				sources := make([]cfgm.Source, 0, 2)
-				root := command.Root()
-				if path := strings.TrimSpace(root.String("config")); path != "" {
-					sources = append(sources, cfgm.File(path))
-				}
-				prefix := "PEMCAST_"
-				if root.IsSet("env-prefix") {
-					prefix = root.String("env-prefix")
-				}
-				if prefix != "" {
-					sources = append(sources, cfgm.Env(prefix))
-				}
-				loaded, err := appconfig.Manager.Load(ctx, sources...)
+				loaded, err := appconfig.LoadCommand(ctx, command.Root())
 				if err != nil {
 					return err
 				}

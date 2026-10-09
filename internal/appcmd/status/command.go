@@ -6,9 +6,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"os"
-	"strings"
 
-	"github.com/lwmacct/251207-go-pkg-cfgm/pkg/cfgm"
 	"github.com/urfave/cli/v3"
 
 	appconfig "github.com/lwmacct/260907-pemcast/internal/config"
@@ -22,18 +20,7 @@ var Command = &cli.Command{
 		&cli.BoolFlag{Name: "json", Usage: "write a machine-readable JSON report"},
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
-		sources := make([]cfgm.Source, 0, 2)
-		if path := strings.TrimSpace(command.Root().String("config")); path != "" {
-			sources = append(sources, cfgm.File(path))
-		}
-		prefix := "PEMCAST_"
-		if command.Root().IsSet("env-prefix") {
-			prefix = command.Root().String("env-prefix")
-		}
-		if prefix != "" {
-			sources = append(sources, cfgm.Env(prefix))
-		}
-		cfg, err := appconfig.Manager.Load(ctx, sources...)
+		cfg, err := appconfig.LoadCommand(ctx, command.Root())
 		if err != nil {
 			return err
 		}

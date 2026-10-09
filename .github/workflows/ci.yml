@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race test
+        run: go test -race ./...
+
+  integration:
+    name: Real etcd integration
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install etcdctl
+        run: |
+          set -euo pipefail
+          _archive="${RUNNER_TEMP}/etcd.tar.gz"
+          _directory="${RUNNER_TEMP}/etcd-v3.7.2-linux-amd64"
+          curl -fsSL \
+            https://github.com/etcd-io/etcd/releases/download/v3.7.2/etcd-v3.7.2-linux-amd64.tar.gz \
+            -o "${_archive}"
+          tar -xzf "${_archive}" -C "${RUNNER_TEMP}"
+          install -m 0755 "${_directory}/etcdctl" /usr/local/bin/etcdctl
+          etcdctl version
+
+      - name: Build pemcast
+        run: |
+          set -euo pipefail
+          mkdir -p .local
+          go build -o .local/pemcast-integration ./cmd/pemcast
+
+      - name: Run integration
+        env:
+          PEMCAST_BINARY: ${{ github.workspace }}/.local/pemcast-integration
+        run: bash scripts/integration-etcd.sh

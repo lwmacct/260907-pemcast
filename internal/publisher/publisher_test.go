@@ -67,6 +67,18 @@ func TestPublishRejectsStaleActiveCAS(t *testing.T) {
 	require.Equal(t, first.Metadata.Generation, kv.values[kv.ActiveKey("nginx")].Data)
 }
 
+func TestPublishSucceedsWhenLaterPublisherOverwritesActivePointer(t *testing.T) {
+	result := packFixtureOne(t, "nginx", "a.example")
+	kv := newFakeKV("/pemcast")
+	kv.overwriteAfterSwap = "sha256-later-publication"
+
+	outcome, err := Publish(t.Context(), kv, result)
+	require.NoError(t, err)
+	require.Equal(t, OutcomePublished, outcome)
+	require.Equal(t, "sha256-later-publication", kv.values[kv.ActiveKey("nginx")].Data)
+	require.Equal(t, string(result.Bundle), kv.values[result.Metadata.BundleKey].Data)
+}
+
 func TestPublishRejectsPrefixMismatch(t *testing.T) {
 	result := packFixtureOne(t, "nginx", "a.example")
 	kv := newFakeKV("/tenants/other")
@@ -89,11 +101,12 @@ func TestPublishRejectsUnsafeRemoteActivePointer(t *testing.T) {
 }
 
 type fakeKV struct {
-	prefix   string
-	keys     keyspace.Keys
-	values   map[string]etcdsource.Value
-	revision int64
-	failSwap bool
+	prefix             string
+	keys               keyspace.Keys
+	values             map[string]etcdsource.Value
+	revision           int64
+	failSwap           bool
+	overwriteAfterSwap string
 }
 
 func newFakeKV(prefix string) *fakeKV {
@@ -142,6 +155,9 @@ func (kv *fakeKV) SwapActive(
 		return false, nil
 	}
 	kv.put(activeKey, generation)
+	if kv.overwriteAfterSwap != "" {
+		kv.put(activeKey, kv.overwriteAfterSwap)
+	}
 	return true, nil
 }
 

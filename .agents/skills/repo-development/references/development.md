@@ -36,7 +36,7 @@ go test ./internal/config
 - deployment: 保持排序 flock, staging, fsync, rename, content-addressed release, release 完整性校验, 原子 relative symlink 切换和 active-release 保留.
 - hook/state: 保持直接执行, 最小环境, event schema, process group 超时, 输出限额, 严格 JSON 和原子 state 写入.
 - pack: 保持本地 key pair 校验, content-addressed generation, deterministic canonical bundle, 安全输出目录, metadata 不暴露私钥, 严格 pack 读取校验, 以及可被 etcdctl 解析的 stage transaction.
-- publisher: 保持 `publish --pack-dir` 的独立 pack 校验, prefix/keyspace 校验, immutable bundle staging, existing bundle exact match, active pointer value+ModRevision CAS 和 pointer read-back. 手动 etcdctl helper 只作为 repo-deployment skill 的 fallback, 不进入产品镜像.
+- publisher: 保持 `publish --pack-dir` 的独立 pack 校验, prefix/keyspace 校验, immutable bundle staging, existing bundle exact match 和 active pointer value+ModRevision CAS. etcd transaction success 是唯一提交判定, 不做会被后续合法发布干扰的 post-CAS read-back. 手动 etcdctl helper 只作为 repo-deployment skill 的 fallback, 不进入产品镜像.
 - status: 保持只读, 不联系 etcd, 不创建目录, 不输出证书内容或凭据.
 
 不要为尚未需要的能力提前增加接口; 新接口应从 controller 或命令的实际测试边界自然产生.

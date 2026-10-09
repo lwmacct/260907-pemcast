@@ -20,7 +20,7 @@ flowchart TD
     existing -->|"bytes 不一致"| stop["拒绝执行"]
     existing -->|"bytes 相同"| capture["捕获 active value + ModRevision"]
     stage --> capture
-    capture --> pointer["active pointer CAS + read-back"]
+    capture --> pointer["active pointer CAS"]
     pointer --> dryrun["agent --once --dry-run"]
 ```
 
@@ -78,9 +78,9 @@ publish 的 user 环境变量优先级是 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`
 8. 捕获 active value 与 ModRevision.
 9. active 已等于目标 generation 时返回 no-op.
 10. 首次发布用 `create(active) = 0` CAS; 更新用 active value + ModRevision CAS.
-11. 成功后 read-back active pointer, 必须等于目标 generation.
+11. etcd transaction success 即表示本次 CAS commit 成功.
 
-bundle stage 可能留下未被引用的孤儿 bundle. 这是允许的中间状态; active pointer CAS 是唯一发布 commit point. 并发冲突时命令失败退出, 重新执行同一 pack 是安全操作.
+bundle stage 可能留下未被引用的孤儿 bundle. 这是允许的中间状态; active pointer CAS 是唯一发布 commit point. 并发冲突时命令失败退出, 重新执行同一 pack 是安全操作. 若本次 CAS 成功后另一个合法发布立即覆盖 active pointer, 本次命令仍返回 published.
 
 ## 手动 etcdctl fallback
 
@@ -103,7 +103,7 @@ helper 会从 `bundle.json` 重新生成 stage transaction, 并与 `stage.txn` �
 
 ## 发布后验证
 
-native publish 已在返回成功前完成 active pointer read-back. 如需独立检查:
+native publish 的 etcd transaction success 即是提交验证. 如需查看当前 active:
 
 ```bash
 etcdctl get /pemcast/v5/active/nginx --print-value-only

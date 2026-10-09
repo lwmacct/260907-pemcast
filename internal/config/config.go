@@ -269,9 +269,8 @@ const AgentEtcdUserTemplate = `${ETCDCTL_USER_AGENT:-${ETCDCTL_USER:-}}`
 // PublishEtcdUserTemplate is the publish-specific credential fallback.
 const PublishEtcdUserTemplate = `${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}`
 
-// LoadEtcdCommand loads configuration for commands that need etcd access.
-// The template source is last so ETCDCTL_USER* credentials are authoritative.
-func LoadEtcdCommand(ctx context.Context, root *cli.Command, etcdUserTemplate string) (*Config, error) {
+// LoadCommand loads the normal file and environment configuration sources.
+func LoadCommand(ctx context.Context, root *cli.Command) (*Config, error) {
 	sources := make([]cfgm.Source, 0, 2)
 	if root != nil {
 		if path := strings.TrimSpace(root.String("config")); path != "" {
@@ -285,7 +284,13 @@ func LoadEtcdCommand(ctx context.Context, root *cli.Command, etcdUserTemplate st
 	if prefix != "" {
 		sources = append(sources, cfgm.Env(prefix))
 	}
-	cfg, err := Manager.Load(ctx, sources...)
+	return Manager.Load(ctx, sources...)
+}
+
+// LoadEtcdCommand loads configuration and resolves command-specific etcd
+// credentials with cfgm template expansion.
+func LoadEtcdCommand(ctx context.Context, root *cli.Command, etcdUserTemplate string) (*Config, error) {
+	cfg, err := LoadCommand(ctx, root)
 	if err != nil {
 		return nil, err
 	}

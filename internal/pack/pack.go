@@ -207,6 +207,15 @@ func Write(outputDir string, result Result) error {
 	if outputDir == "." || outputDir == string(filepath.Separator) || !filepath.IsAbs(outputDir) {
 		return fmt.Errorf("output directory %q must be a clean absolute non-root path", outputDir)
 	}
+	if err := Validate(result); err != nil {
+		return fmt.Errorf("refuse invalid pack: %w", err)
+	}
+	expectedStageTxn := stageTransaction(result.Metadata.BundleKey, result.Bundle)
+	if len(result.StageTxn) == 0 {
+		result.StageTxn = []byte(expectedStageTxn)
+	} else if string(result.StageTxn) != expectedStageTxn {
+		return fmt.Errorf("pack stage transaction does not match bundle and bundle key")
+	}
 	if _, err := os.Stat(outputDir); err == nil {
 		return fmt.Errorf("output directory %q already exists", outputDir)
 	} else if !os.IsNotExist(err) {

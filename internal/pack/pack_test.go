@@ -125,6 +125,57 @@ func TestWriteRejectsUnsafeOutputDirectory(t *testing.T) {
 	require.ErrorContains(t, err, "must be a clean absolute non-root path")
 }
 
+func TestWriteRejectsInvalidPack(t *testing.T) {
+	certificatePath, privateKeyPath := writeKeyPair(t)
+	result, err := Build(Options{
+		TargetID:        "nginx",
+		EtcdPrefix:      "/pemcast",
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+	})
+	require.NoError(t, err)
+	result.Bundle = append([]byte(nil), result.Bundle...)
+	result.Bundle[len(result.Bundle)-2]++
+
+	outputDir := filepath.Join(t.TempDir(), "pack")
+	err = Write(outputDir, result)
+	require.ErrorContains(t, err, "refuse invalid pack")
+	require.NoDirExists(t, outputDir)
+}
+
+func TestWriteRebuildsMissingStageTransaction(t *testing.T) {
+	certificatePath, privateKeyPath := writeKeyPair(t)
+	result, err := Build(Options{
+		TargetID:        "nginx",
+		EtcdPrefix:      "/pemcast",
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+	})
+	require.NoError(t, err)
+	result.StageTxn = nil
+
+	outputDir := filepath.Join(t.TempDir(), "pack")
+	require.NoError(t, Write(outputDir, result))
+	require.Equal(t, []byte(stageTransaction(result.Metadata.BundleKey, result.Bundle)), mustRead(t, filepath.Join(outputDir, "stage.txn")))
+}
+
+func TestWriteRejectsMismatchedStageTransaction(t *testing.T) {
+	certificatePath, privateKeyPath := writeKeyPair(t)
+	result, err := Build(Options{
+		TargetID:        "nginx",
+		EtcdPrefix:      "/pemcast",
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+	})
+	require.NoError(t, err)
+	result.StageTxn = []byte("invalid transaction\n")
+
+	outputDir := filepath.Join(t.TempDir(), "pack")
+	err = Write(outputDir, result)
+	require.ErrorContains(t, err, "stage transaction does not match")
+	require.NoDirExists(t, outputDir)
+}
+
 func TestReadValidatesOfficialPackWithoutRequiringStageTransaction(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
