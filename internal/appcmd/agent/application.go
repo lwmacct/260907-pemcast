@@ -37,7 +37,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
 	}
 	var locks []*deploy.RootLock
 	if !cfg.Agent.DryRun {
-		locks, err = deploy.LockRoots(deploy.TargetRoots(cfg.Agent.Targets))
+		locks, err = deploy.LockRoots(cfg.Agent.Targets)
 		if err != nil {
 			return nil, err
 		}

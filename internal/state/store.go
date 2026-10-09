@@ -36,6 +36,18 @@ func (s *Store) Ensure() error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
+	info, err := os.Lstat(s.dir)
+	if err != nil {
+		return fmt.Errorf("stat state directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("state directory path %q is not a directory", s.dir)
+	}
+	if info.Mode().Perm() != 0o700 {
+		if err := os.Chmod(s.dir, 0o700); err != nil {
+			return fmt.Errorf("secure state directory: %w", err)
+		}
+	}
 	return nil
 }
 

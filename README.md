@@ -26,6 +26,7 @@ flowchart LR
 - 本地发布内容寻址: release 目录名来自 bundle digest, 相同内容不会重复写入; 复用前校验 marker, bytes, mode 和目录树.
 - 应用路径稳定: 应用读取 `current/...`, pemcast 通过临时 symlink 和 rename 原子切换目标.
 - output root 互斥: 非 dry-run agent 按排序获取每个 root 的 `.pemcast/agent.lock`, 并持有到进程退出.
+- 非 dry-run agent 自动创建本地目录: `state-dir` 固定为 0700, output root 与 `.pemcast` 使用配置的 `directory-mode`; dry-run 不创建任何本地目录.
 - dry-run 无本地写入: 不创建 state directory 和 output root, 不读写 state, 不执行 deploy 或 hook.
 - 服务重载可重试: hook 在本地切换后执行, 失败记录在 state 中, 由后续事件或周期 resync 重试.
 

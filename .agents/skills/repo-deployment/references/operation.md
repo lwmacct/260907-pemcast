@@ -97,6 +97,8 @@ pemcast --config /etc/pemcast/config.yaml agent
 
 使用失败自动重启的 supervisor, 并用 `SIGTERM` 或 `SIGINT` 停止. 除非有意在首启同步, state 和 output path 都应持久化.
 
+非 dry-run agent 会自动创建本地目录: `agent.state-dir` 固定为 0700, 每个 target 的 output root 与 `.pemcast` 使用该 target 的 `output.directory-mode`. 部署脚本不需要预创建这些路径. `--once --dry-run` 保持无本地写入, 不会创建 state 或 output path.
+
 ## 容器部署拓扑
 
 ### 推荐拓扑: host-level agent

@@ -19,6 +19,19 @@ func TestStoreRoundTrip(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
+func TestStoreEnsureSecuresExistingStateDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	store, err := New(dir)
+	require.NoError(t, err)
+	require.NoError(t, store.Ensure())
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
 func TestNewDoesNotCreateStateDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "missing-state")
 	if _, err := New(dir); err != nil {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,6 +54,16 @@ func TestNewCreatesStateDirectoryOutsideDryRun(t *testing.T) {
 
 	require.DirExists(t, cfg.Agent.StateDir)
 	require.FileExists(t, filepath.Join(cfg.Agent.Targets[0].Output.Root, ".pemcast", "agent.lock"))
+
+	stateInfo, err := os.Stat(cfg.Agent.StateDir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), stateInfo.Mode().Perm())
+	rootInfo, err := os.Stat(cfg.Agent.Targets[0].Output.Root)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), rootInfo.Mode().Perm())
+	managedInfo, err := os.Stat(filepath.Join(cfg.Agent.Targets[0].Output.Root, ".pemcast"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), managedInfo.Mode().Perm())
 }
 
 func TestNewRejectsCompetingProcessForSameOutputRoot(t *testing.T) {
