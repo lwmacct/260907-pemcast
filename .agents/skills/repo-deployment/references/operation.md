@@ -23,32 +23,32 @@ scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
 ## etcd prefix, 租户和 target 级 bundle 授权
 
-etcd namespace prefix 默认是 `/pemcast`, 可以通过 `agent.etcd.prefix`, `PEMCAST_AGENT_ETCD_PREFIX` 或 CLI `--etcd-prefix` 修改. 程序只硬编码 `/v4/active|bundles` 子协议. 以 target `nginx` 为例:
+etcd namespace prefix 默认是 `/pemcast`, agent 可以通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 修改, pack CLI 使用 `--etcd-prefix`. 程序只硬编码 `/v5/active|bundles` 子协议. 以 target `nginx` 为例:
 
 ```text
-/pemcast/v4/active/nginx
-/pemcast/v4/bundles/nginx/<generation>
+/pemcast/v5/active/nginx
+/pemcast/v5/bundles/nginx/<generation>
 ```
 
 `etcd-prefix` 可以作为多租户或多环境的 namespace 边界. 例如租户 `example` 使用 `/pemcast/tenants/example`, 租户 `demo` 使用 `/pemcast/tenants/demo`:
 
 ```text
-/pemcast/tenants/example/v4/active/nginx
-/pemcast/tenants/demo/v4/active/nginx
+/pemcast/tenants/example/v5/active/nginx
+/pemcast/tenants/demo/v5/active/nginx
 ```
 
-两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v4` 协议语义.
+两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v5` 协议语义.
 
 agent 需要读取整个 active prefix 以执行一次 snapshot 和单个 watch. 证书私钥只按 target 授权:
 
 ```text
-agent-active:/pemcast/v4     read        /pemcast/v4/active/ --prefix
-agent-bundles:/pemcast/v4:nginx read     /pemcast/v4/bundles/nginx/ --prefix
-publisher:/pemcast/v4:nginx  readwrite   /pemcast/v4/active/nginx
-publisher:/pemcast/v4:nginx  readwrite   /pemcast/v4/bundles/nginx/ --prefix
+agent-active:/pemcast/v5     read        /pemcast/v5/active/ --prefix
+agent-bundles:/pemcast/v5:nginx read     /pemcast/v5/bundles/nginx/ --prefix
+publisher:/pemcast/v5:nginx  readwrite   /pemcast/v5/active/nginx
+publisher:/pemcast/v5:nginx  readwrite   /pemcast/v5/bundles/nginx/ --prefix
 ```
 
-agent user 只读远端状态. active prefix 暴露同一租户内全部 target ID 和 generation 元数据, 但私钥 bundle 只对授权 target 开放. publisher user 供 `pemcast publish inspect/plan/apply/activate` 使用, 读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. 一个 etcd user 可以挂 active reader role 和多个 target bundle role. root 只用于认证和用户管理, 不进入 pemcast 配置.
+agent user 只读远端状态. active prefix 暴露同一租户内全部 target ID 和 generation 元数据, 但私钥 bundle 只对授权 target 开放. publisher user 供 etcdctl staged publication helper 使用, 读取 active pointer 和 bundle, stage 新 bundle, 并 CAS 切换 pointer. 一个 etcd user 可以挂 active reader role 和多个 target bundle role. root 只用于认证和用户管理, 不进入 pemcast 配置.
 
 使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent user, publisher user 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
 
@@ -75,17 +75,7 @@ agent:
     prefix: /pemcast
 ```
 
-发布端配置使用:
-
-```yaml
-agent:
-  etcd:
-    endpoints:
-      - https://etcd.example:2379
-    username: publish
-    password: "<publish-password>"
-    prefix: /pemcast
-```
+发布端不加载 pemcast agent 配置. `pemcast pack` 使用 `--etcd-prefix`, `publish-v5.sh` 复用 etcdctl 标准环境变量 `ETCDCTL_ENDPOINTS`, `ETCDCTL_USER` 和 `ETCDCTL_*` TLS 变量.
 
 使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcd.tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcd.tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
 
@@ -260,6 +250,6 @@ cat /var/lib/pemcast/nginx.json | jq .
 - deploy: output 权限, release 完整性或文件系统失败;
 - hook timeout/nonzero: executable, authorization 或下游服务失败.
 
-回滚使用 `pemcast publish activate` 把 active pointer 移回完整的旧 content-addressed generation. 需要时 pemcast 会重建已被 prune 的本地 release. 删除 pointer 永远不会删除本地文件: `retain` 继续提供服务, `fail` 报告删除.
+回滚使用旧 pack 目录重新执行 `publish-v5.sh`, 把 active pointer CAS 回完整的旧 content-addressed generation. 需要时 pemcast 会重建已被 prune 的本地 release. 删除 pointer 永远不会删除本地文件: `retain` 继续提供服务, `fail` 报告删除.
 
 手工恢复前先停止持有 `agent.lock` 的 agent, 修复完整 release 和 symlink, 再重启并对目标 generation 执行 dry-run. 正常运行期间不要编辑 `.pemcast` 内部结构.

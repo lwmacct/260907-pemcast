@@ -14,7 +14,7 @@ import (
 
 const AppName = "pemcast"
 
-// DefaultEtcdPrefix is the default namespace placed before the fixed v4 protocol root.
+// DefaultEtcdPrefix is the default namespace placed before the fixed v5 protocol root.
 const DefaultEtcdPrefix = "/pemcast"
 
 // Config is grouped by CLI subcommand so cfgm can trim command prefixes.
@@ -35,7 +35,7 @@ type Agent struct {
 
 // Etcd configures access to the remote etcd cluster.
 type Etcd struct {
-	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v4"`
+	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v5"`
 	Endpoints      []string      `json:"endpoints"       desc:"etcd endpoint URLs"`
 	Username       string        `json:"username"        desc:"etcd username"`
 	Password       string        `json:"password"        desc:"etcd password"`

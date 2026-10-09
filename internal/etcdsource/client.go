@@ -1,4 +1,4 @@
-// Package etcdsource reads immutable pemcast v4 bundles and active pointers from etcd.
+// Package etcdsource reads immutable pemcast v5 bundles and active pointers from etcd.
 package etcdsource
 
 import (

@@ -45,17 +45,17 @@ func TestMaterialFromValueRejectsMalformedBundle(t *testing.T) {
 	require.ErrorContains(t, err, "decode bundle")
 }
 
-func TestProtocolKeysUseKindFirstV4Root(t *testing.T) {
+func TestProtocolKeysUseKindFirstV5Root(t *testing.T) {
 	client := newClient(nil, time.Second)
-	require.Equal(t, "/v4", ProtocolRoot)
+	require.Equal(t, "/v5", ProtocolRoot)
 	require.Equal(t, "/pemcast", client.Prefix())
-	require.Equal(t, "/pemcast/v4/active/", client.ActivePrefix())
-	require.Equal(t, "/pemcast/v4/active/nginx", client.ActiveKey("nginx"))
-	require.Equal(t, "/pemcast/v4/bundles/", client.BundlePrefix())
-	require.Equal(t, "/pemcast/v4/bundles/nginx/", client.TargetBundlePrefix("nginx"))
+	require.Equal(t, "/pemcast/v5/active/", client.ActivePrefix())
+	require.Equal(t, "/pemcast/v5/active/nginx", client.ActiveKey("nginx"))
+	require.Equal(t, "/pemcast/v5/bundles/", client.BundlePrefix())
+	require.Equal(t, "/pemcast/v5/bundles/nginx/", client.TargetBundlePrefix("nginx"))
 	require.Equal(
 		t,
-		"/pemcast/v4/bundles/nginx/sha256-value",
+		"/pemcast/v5/bundles/nginx/sha256-value",
 		client.BundleKey("nginx", "sha256-value"),
 	)
 
@@ -63,10 +63,10 @@ func TestProtocolKeysUseKindFirstV4Root(t *testing.T) {
 	require.NoError(t, err)
 	client.keys = customKeys
 	require.Equal(t, "/tenants/example", client.Prefix())
-	require.Equal(t, "/tenants/example/v4/active/nginx", client.ActiveKey("nginx"))
+	require.Equal(t, "/tenants/example/v5/active/nginx", client.ActiveKey("nginx"))
 	require.Equal(
 		t,
-		"/tenants/example/v4/bundles/nginx/sha256-value",
+		"/tenants/example/v5/bundles/nginx/sha256-value",
 		client.BundleKey("nginx", "sha256-value"),
 	)
 }

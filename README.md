@@ -1,12 +1,15 @@
 # pemcast
 
-pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent. publisher 从证书内容计算 generation, 并在一个 etcd transaction 中原子提交完整单 key bundle 和 active pointer; pemcast 监听指针变化, 按事件 revision 取回 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
+pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent. `pemcast pack` 从证书内容计算 content-addressed generation, 并生成 deterministic bundle 与 etcdctl transaction 输入; 发布方先 stage immutable bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. pemcast 监听指针变化, 按事件 revision 取回 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
 
 ```mermaid
 flowchart LR
-    publisher["pemcast publish plan/apply"] -->|"原子提交 bundle + pointer"| etcd[("etcd")]
-    etcd -->|"content-addressed pointer + revision"| agent["pemcast agent"]
-    agent -->|"按 revision 获取并校验"| release["immutable release"]
+    pack["pemcast pack"] --> artifacts["bundle.json + metadata.json + stage.txn"]
+    artifacts --> etcdctl["publish-v5.sh / etcdctl"]
+    etcdctl -->|"stage immutable bundle"| etcd[("etcd")]
+    etcdctl -->|"active pointer CAS"| etcd
+    etcd -->|"pointer + revision"| agent["pemcast agent"]
+    agent -->|"exact-key 获取并校验"| release["immutable release"]
     release -->|"原子切换 symlink"| current["current"]
     current --> app["nginx 或其他证书消费者"]
     agent -->|"JSON + 环境变量"| hook["可信本地 hook"]
@@ -15,75 +18,68 @@ flowchart LR
 
 ## 设计要点
 
-- 证书发布者与消费者解耦: pemcast 不包含签发或审批系统, 但提供安全 `publish inspect/plan/apply/activate` 命令.
+- 证书发布者与消费者解耦: pemcast 不包含签发, 审批, lease manager 或 HTTP API.
 - 远端 generation 内容寻址: generation 由完整 bundle digest 计算, 相同内容天然相同, 内容变化必然得到新名字.
+- 发布分阶段: bundle 是 immutable object database, active pointer 是 ref; bundle 先 stage, pointer CAS 是唯一 commit point.
+- 并发安全: 首次发布比较 create revision, 更新比较 active value + ModRevision; 冲突失败而不是覆盖.
 - 校验发生在启用前: manifest 严格解析, 文件逐一校验 SHA-256, 证书和私钥必须通过 `tls.X509KeyPair`, 并满足有效期策略.
-- 本地发布是内容寻址的: release 目录名来自整个 bundle 的 digest, 相同内容不会重复写入. 复用 release 前会校验 marker, 文件内容, mode 和目录树.
+- 本地发布内容寻址: release 目录名来自 bundle digest, 相同内容不会重复写入; 复用前校验 marker, bytes, mode 和目录树.
 - 应用路径稳定: 应用读取 `current/...`, pemcast 通过临时 symlink 和 rename 原子切换目标.
 - output root 互斥: 非 dry-run agent 按排序获取每个 root 的 `.pemcast/agent.lock`, 并持有到进程退出.
 - dry-run 无本地写入: 不创建 state directory 和 output root, 不读写 state, 不执行 deploy 或 hook.
-- 服务重载可重试: hook 在本地切换后执行, 失败会记录在 state 中, 由后续事件或周期 resync 重试.
+- 服务重载可重试: hook 在本地切换后执行, 失败记录在 state 中, 由后续事件或周期 resync 重试.
 
 ## 快速上手
 
-生成并修改配置:
+生成并修改 agent 配置:
 
 ```bash
 pemcast config example > config/config.yaml
-```
-
-至少配置 `agent.etcd.endpoints`, 一个 target 的 `output.root`, mappings, validation pair 和 hook, 然后校验:
-
-```bash
 pemcast --config config/config.yaml config validate
 ```
 
-etcd namespace prefix 由 `agent.etcd.prefix` 配置, 默认 `/pemcast`. 环境变量是 `PEMCAST_AGENT_ETCD_PREFIX`, agent CLI 支持 `--etcd.prefix` 和别名 `--etcd-prefix`, publisher CLI 支持 `--etcd-prefix`. 程序只硬编码 `/v4` 子协议. 以 prefix `/pemcast`, target `nginx` 为例:
+至少配置 `agent.etcd.endpoints`, 一个 target 的 `output.root`, mappings, validation pair 和 hook.
+
+etcd namespace prefix 默认 `/pemcast`. agent 通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 配置, pack CLI 通过 `--etcd-prefix` 配置. 程序只硬编码 `/v5` 子协议:
 
 ```text
-/pemcast/v4/active/nginx = sha256-<bundle-digest>
-/pemcast/v4/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
+/pemcast/v5/active/nginx = sha256-<bundle-digest>
+/pemcast/v5/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
-可以用只读命令查看远端 active pointer:
+本地打包:
 
 ```bash
-pemcast --config config/config.yaml publish inspect --target nginx
-```
-
-输出为机器可读 JSON:
-
-```json
-{
-  "etcd-prefix": "/pemcast",
-  "target-id": "nginx",
-  "active": {
-    "exists": true,
-    "generation": "sha256-current",
-    "mod-revision": 123
-  }
-}
-```
-
-再生成发布计划:
-
-```bash
-pemcast --config config/config.yaml publish plan \
+pemcast pack \
+  --etcd-prefix /pemcast \
   --target nginx \
   --certificate fullchain.pem \
   --private-key privkey.pem \
-  --output release-plan.json
+  --output-dir /secure/tmp/nginx-pack
 ```
 
-再执行计划:
+输出文件是:
+
+```text
+/secure/tmp/nginx-pack/
+├── bundle.json
+├── metadata.json
+└── stage.txn
+```
+
+`pack` 不访问 etcd. `bundle.json` 与 `stage.txn` 包含私钥, 文件权限为 0600; pack 目录只能保存在受限存储中.
+
+使用 etcdctl helper 发布:
 
 ```bash
-pemcast --config config/config.yaml publish apply --plan release-plan.json
+ETCDCTL_ENDPOINTS='https://etcd.example:2379' \
+ETCDCTL_USER='publisher-ci:<password>' \
+scripts/publish-v5.sh --pack-dir /secure/tmp/nginx-pack
 ```
 
-`plan` 会自动捕获当前 active pointer 的 absent/existing 状态, generation 和 ModRevision, 并校验本地证书/私钥能组成 TLS pair. 首次发布不需要额外参数. `apply` 重新读取本地文件, 确认 digest 未变化, 然后在一个 etcd transaction 中同时创建新 bundle 和切换 pointer. transaction 条件包含 bundle absent, active generation match 和 active ModRevision match. 任一条件失败时, bundle 和 pointer 都不会提交.
+helper 先执行 `stage.txn`. 如果 bundle key 已存在, 必须与本地 `bundle.json` bytes 完全相同. 然后捕获 active pointer, 首次发布用 `create(active) = 0` CAS, 更新用 active value + ModRevision CAS. active 已经等于目标 generation 时直接 no-op.
 
-单 key JSON bundle 将文件 base64 内联, 完整 encoded value 最大 1 MiB. 回滚使用 `publish activate`, 它校验已有 bundle 和 TLS pair 后, 自动捕获当前 active 状态并用 value + ModRevision CAS 切换 pointer.
+bundle stage 可能留下未被引用的孤儿 bundle; 这不产生消费者事件, 也不会改变本地证书. 只有 pointer CAS 成功才是发布 commit point.
 
 先不落盘测试远端内容:
 
@@ -98,7 +94,7 @@ pemcast --config config/config.yaml agent --once
 pemcast --config config/config.yaml agent
 ```
 
-agent 会一次 range read 读取 active prefix 下全部 pointer, 记录同一个 revision, 然后只监听 active prefix. Bundle 写入不会产生 watch 事件. Controller 只 reconcile 配置中的 target, bundle fetch 仍使用 exact key.
+agent 一次 range read 读取 active prefix 下全部 pointer, 记录同一个 revision, 然后只监听 active prefix. bundle stage 不产生 watch 事件. controller 只 reconcile 配置中的 target, bundle fetch 使用 exact key.
 
 本地布局为:
 
@@ -121,19 +117,12 @@ agent 会一次 range read 读取 active prefix 下全部 pointer, 记录同一�
 
 ## 容器部署契约
 
-pemcast 是 node-level agent. 推荐每台设备运行一个 agent, 由它统一管理本机证书 output root 并执行本机 reload hook. 应用容器只需要以只读方式挂载完整的 output root:
+pemcast 是 node-level agent. 推荐每台设备运行一个 agent, 由它统一管理本机证书 output root 并执行本机 reload hook. 应用容器只需要以只读方式挂载完整 output root:
 
 ```bash
 docker run \
   -v /var/lib/pemcast/nginx:/etc/nginx/tls:ro \
   gateway-image
-```
-
-应用读取:
-
-```text
-/etc/nginx/tls/current/fullchain.pem
-/etc/nginx/tls/current/privkey.pem
 ```
 
 必须挂载 output root 本身, 不能挂载 `current`, `current/fullchain.pem` 或 `current/privkey.pem`. Kubernetes 中也不要用 subPath 指向 `current`. 否则 container runtime 可能在启动时固定旧 release, pemcast 后续切换 symlink 时应用看不到新证书.
@@ -148,7 +137,7 @@ docker exec gateway nginx -s reload
 docker kill --signal=HUP api
 ```
 
-hook 是本机服务控制适配器, 必须运行在有权限控制目标服务的位置. 如果 pemcast 以容器方式运行, 它需要挂载 output root, hook 以及对应的容器 runtime 控制接口. 挂载 Docker socket 或 Podman socket 等价于高权限, 只应部署在受信任的 node agent 容器中.
+hook 是本机服务控制适配器, 必须运行在有权限控制目标服务的位置. 如果 pemcast 以容器方式运行, 它需要挂载 output root, hook 以及对应容器 runtime 控制接口. 挂载 Docker socket 或 Podman socket 等价于高权限, 只应部署在受信任的 node agent 容器中.
 
 pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hook retry 和 `pemcast status` 诊断, 设备离线后重新上线会继续从 etcd 收敛到 active generation.
 
@@ -159,13 +148,13 @@ pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hoo
 agent 保持只读. publisher 单独具备写入权限. active prefix 是租户内控制面, bundle 是敏感数据面:
 
 ```text
-agent-active:<etcd-prefix>/v4 read <etcd-prefix>/v4/active/ prefix
-agent-bundles:<etcd-prefix>/v4:<target-id> read <etcd-prefix>/v4/bundles/<target-id>/ prefix
-publisher:<etcd-prefix>/v4:<target-id> readwrite <etcd-prefix>/v4/active/<target-id>
-publisher:<etcd-prefix>/v4:<target-id> readwrite <etcd-prefix>/v4/bundles/<target-id>/ prefix
+agent-active:<etcd-prefix>/v5 read <etcd-prefix>/v5/active/ prefix
+agent-bundles:<etcd-prefix>/v5:<target-id> read <etcd-prefix>/v5/bundles/<target-id>/ prefix
+publisher:<etcd-prefix>/v5:<target-id> readwrite <etcd-prefix>/v5/active/<target-id>
+publisher:<etcd-prefix>/v5:<target-id> readwrite <etcd-prefix>/v5/bundles/<target-id>/ prefix
 ```
 
-一个 etcd user 可以挂一个 active reader role 和多个 target bundle role. 例如 `agent-node-a` 读取租户 active metadata, 但只能读取 `nginx` 和 `api` 的私钥 bundle. 不同租户使用不同 `agent.etcd.prefix`, 也建议使用不同 etcd user.
+一个 etcd user 可以挂一个 active reader role 和多个 target bundle role. 例如 `agent-node-a` 读取租户 active metadata, 但只能读取 `nginx` 和 `api` 的私钥 bundle. 不同租户使用不同 prefix 和不同 etcd users.
 
 初始化或追加 target 授权:
 
@@ -178,56 +167,61 @@ bash .agents/skills/repo-deployment/scripts/init-rbac.sh \
   nginx api.example.com
 ```
 
-脚本会验证授权 active/bundle 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target bundle 读取被拒绝.
+脚本会验证授权 active/bundle 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target bundle 读取被拒绝, 以及未认证读取被拒绝.
 
-## CI 中直接运行 publisher
+## CI 中直接发布
 
-发布产物是公开的 standard OCI/Docker image, linux/amd64 二进制固定位于 `/usr/local/bin/pemcast`. GitHub Actions 已有 Docker 服务, 证书签发 workflow 不需要提取二进制, 也不需要额外安装 Go, ORAS 或配置 GHCR 凭据:
+发布镜像包含 linux/amd64 `pemcast`, `publish-v5.sh`, jq 和官方 etcd v3.7.2 的 `etcdctl`. GitHub Actions 已有 Docker 服务, 不需要提取二进制, 安装 Go, 使用 ORAS 或配置 GHCR 凭据:
 
 ```bash
-_image="ghcr.io/lwmacct/260907-pemcast:v0.7.261009"
+_image="ghcr.io/lwmacct/260907-pemcast:<version>"
 _work="$(mktemp -d)"
 
 docker run --rm --platform linux/amd64 \
   --volume "${CERTBOT_OUTPUT_DIR}/cert:/certs:ro" \
   --volume "${_work}:/work" \
-  -e PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-  -e PEMCAST_AGENT_ETCD_USERNAME='publish' \
-  -e PEMCAST_AGENT_ETCD_PASSWORD='...' \
-  -e PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
   "${_image}" \
-  pemcast publish plan \
+  pemcast pack \
     --etcd-prefix /pemcast \
     --target nginx \
     --certificate /certs/fullchain.pem \
     --private-key /certs/privkey.pem \
-    --output /work/release-plan.json
+    --output-dir /work/pack
 
 docker run --rm --platform linux/amd64 \
-  --volume "${CERTBOT_OUTPUT_DIR}/cert:/certs:ro" \
-  --volume "${_work}:/work" \
-  -e PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-  -e PEMCAST_AGENT_ETCD_USERNAME='publish' \
-  -e PEMCAST_AGENT_ETCD_PASSWORD='...' \
-  -e PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
+  --volume "${_work}:/work:ro" \
+  -e ETCDCTL_ENDPOINTS='https://etcd.example:2379' \
+  -e ETCDCTL_USER='publish:...' \
   "${_image}" \
-  pemcast publish apply \
-    --etcd-prefix /pemcast \
-    --plan /work/release-plan.json
+  /usr/local/bin/publish-v5.sh --pack-dir /work/pack
 ```
 
-plan 会记录容器内 `/certs/...` 绝对路径和 etcd prefix, 因此 `plan` 和 `apply` 必须使用相同的证书挂载点与 `--etcd-prefix`. 使用 exact version tag 或 digest. 如 etcd 使用 mTLS, 同时挂载 CA/client cert/key 并通过 `PEMCAST_AGENT_ETCD_TLS_*` 环境变量传入容器内路径.
+如果 etcd 使用 mTLS, 同时挂载 CA/client cert/key 并设置 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY`. 使用 exact version tag 或 digest.
 
-## v3 到 v4 破坏式切换
+Alpine 3.22 的 `etcd` 与 `etcd-ctl` 包是 3.5.24, 因此 pemcast 镜像从官方 etcd v3.7.2 镜像复制 `etcdctl`, 不使用 Alpine 包.
 
-pemcast v4 不读取, 不迁移和不兼容 v2/v3 数据. 推荐切换顺序:
+## 回滚
 
-1. 初始化 v4 active reader, target bundle 和 publisher roles/users.
-2. 使用 v4 publisher 将现有证书重新发布到 `<prefix>/v4/...`.
-3. 将 agent 配置和镜像升级到 v4, 保持同一个 `agent.etcd.prefix`.
+保留旧 pack 目录时, 重新执行 helper 即可把 pointer CAS 回旧 generation:
+
+```bash
+ETCDCTL_ENDPOINTS='https://etcd.example:2379' \
+ETCDCTL_USER='publisher-ci:<password>' \
+scripts/publish-v5.sh --pack-dir /secure/archive/nginx-pack-sha256-old
+```
+
+如果旧 pack 目录没有保留, 使用当时完全相同的证书和私钥重新 `pemcast pack`; deterministic generation 与 bundle bytes 会相同. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
+
+## v4 到 v5 破坏式切换
+
+pemcast v5 不读取, 不迁移和不兼容 v2/v3/v4 数据. 推荐切换顺序:
+
+1. 初始化 v5 active reader, target bundle 和 publisher roles/users.
+2. 使用 v5 `pack` + etcdctl helper 将现有证书重新发布到 `<prefix>/v5/...`.
+3. 将 agent 配置和镜像升级到 v5, 保持同一个 `agent.etcd.prefix`.
 4. 执行 `agent --once --dry-run`, 再执行一次同步或重启 watch agent.
-5. 用 `etcdctl` 核对 v4 active/bundle 和未授权访问.
-6. 确认消费端证书正常后, 删除旧 `/pemcast/v2` 与 `/pemcast/v3` prefix 和旧 roles/users.
+5. 用 `etcdctl` 核对 v5 active/bundle 和未授权访问.
+6. 确认消费端证书正常后, 删除旧 protocol prefixes 和旧 roles/users.
 
 ## Hook 契约
 
@@ -256,10 +250,7 @@ pemcast agent --once
 pemcast agent --once --dry-run
 pemcast config example
 pemcast config validate
-pemcast publish inspect
-pemcast publish plan
-pemcast publish apply
-pemcast publish activate
+pemcast pack
 pemcast status --json
 pemcast version
 ```
@@ -271,7 +262,7 @@ pemcast version
 仓库在 `.agents/skills/` 中包含三个 Codex skills:
 
 - `$repo-architecture`: 架构, 包边界, 同步不变量和失败行为.
-- `$repo-deployment`: agent 配置, etcd bundle 发布, 回滚, 运维和诊断.
+- `$repo-deployment`: agent 配置, pack/etcdctl 发布, 回滚, 运维和诊断.
 - `$repo-development`: Go 修改, 包级测试, 生成配置, 构建和发布要求.
 
 详细 references 位于:

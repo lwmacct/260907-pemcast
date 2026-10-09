@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// ProtocolRoot is the fixed kind-first v4 protocol path below the configured etcd prefix.
-const ProtocolRoot = "/v4"
+// ProtocolRoot is the fixed kind-first v5 protocol path below the configured etcd prefix.
+const ProtocolRoot = "/v5"
 
 // DefaultPrefix is the default etcd namespace in front of ProtocolRoot.
 const DefaultPrefix = "/pemcast"
@@ -55,7 +55,7 @@ func safePrefixComponent(component string) bool {
 // Prefix returns the normalized namespace prefix.
 func (k Keys) Prefix() string { return k.prefix }
 
-// Root returns the configured prefix plus the fixed v4 protocol root.
+// Root returns the configured prefix plus the fixed v5 protocol root.
 func (k Keys) Root() string { return path.Join(k.prefix, ProtocolRoot) }
 
 // ActivePrefix returns the contiguous control-plane prefix containing every active pointer.

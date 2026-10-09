@@ -1,10 +1,10 @@
-# pemcast v4 架构
+# pemcast v5 架构
 
 ## 定位
 
-pemcast 是一个 pull-only certificate agent. publisher 从证书内容计算 content-addressed generation, 在一个 etcd transaction 中提交完整单 key bundle 和 active pointer. agent 监听 pointer, 按事件 revision 读取 bundle, 在本地物化 immutable release, 并切换稳定 symlink. 服务重载交给可信 hook.
+pemcast 是一个 pull-only certificate agent. `pemcast pack` 在本地校验证书并生成 immutable v5 bundle 与 etcdctl transaction 输入; 运维方先用 etcdctl stage bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. agent 只监听 active pointer, 按事件 revision exact-key 读取 bundle, 校验后在本地物化 immutable release 并切换稳定 symlink. 服务重载交给可信 hook.
 
-仓库提供 `publish inspect/plan/apply/activate` CLI, 但不包含 lease manager, service-control integration 或 HTTP API.
+仓库不包含 etcd lease manager, service-control integration 或 HTTP API. 远端发布由 `scripts/publish-v5.sh` 驱动 etcdctl, 不存在 `publish` 子命令.
 
 ## 运行流程
 
@@ -15,7 +15,7 @@ pemcast 是一个 pull-only certificate agent. publisher 从证书内容计算 c
 1. Range read active prefix, 记录 etcd revision.
 2. 并发 reconcile snapshot.
 3. 从 `snapshot.Revision + 1` 开始监听 active prefix.
-4. 处理 pointer put/delete; bundle 写入不会产生 watch 事件.
+4. 处理 pointer put/delete; bundle stage 不产生 watch 事件.
 5. 到达 `resync-interval` 时放弃 watch, 从新 snapshot 重启.
 6. snapshot/watch 失败时使用有界指数退避和 jitter 重试.
 
@@ -24,7 +24,8 @@ watch 模式中单个 reconcile 失败只记录日志, 不停止进程.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant P as publisher
+    participant P as pemcast pack
+    participant O as operator/etcdctl
     participant E as etcd
     participant A as agent
     participant C as controller
@@ -32,7 +33,9 @@ sequenceDiagram
     participant H as hook
     participant S as state
 
-    P->>E: transaction: create bundle + swap active
+    P->>O: bundle.json + metadata.json + stage.txn
+    O->>E: create bundle if absent
+    O->>E: active value + ModRevision CAS
     E-->>A: pointer event
     A->>C: reconcile target
     C->>E: exact-key get bundle at event revision
@@ -46,20 +49,20 @@ sequenceDiagram
     C->>S: 原子保存 state
 ```
 
-## v4 远端模型
+## v5 远端模型
 
-etcd namespace prefix 可配置, 默认 `/pemcast`. 固定子协议是 kind-first `/v4`:
+etcd namespace prefix 可配置, 默认 `/pemcast`. 固定子协议是 kind-first `/v5`:
 
 ```text
-<etcd-prefix>/v4/active/<target-id> = <generation>
-<etcd-prefix>/v4/bundles/<target-id>/<generation> = <complete JSON bundle>
+<etcd-prefix>/v5/active/<target-id> = <generation>
+<etcd-prefix>/v5/bundles/<target-id>/<generation> = <complete JSON bundle>
 ```
 
 bundle 是单 key JSON, 文件内容 base64 内联:
 
 ```json
 {
-  "schema": "pemcast/v4",
+  "schema": "pemcast/v5",
   "files": [
     {
       "name": "fullchain.pem",
@@ -84,12 +87,12 @@ bundle 是单 key JSON, 文件内容 base64 内联:
 - 每个 file 的 SHA-256 必须匹配原始 bytes, 不是 base64 文本.
 - pair 两端必须引用正确 kind 的文件.
 - 完整 encoded bundle 最大 1 MiB.
-- bundle fetch 使用 exact key, 不再接受 generation prefix 或额外 key.
+- bundle fetch 使用 exact key, 不接受 generation prefix 或额外 key.
 
 whole-bundle digest 按排序后的文件名和原始内容 SHA-256 计算:
 
 ```text
-SHA256("pemcast/v4" + NUL + for each sorted file: name + NUL + SHA256(raw content))
+SHA256("pemcast/v5" + NUL + for each sorted file: name + NUL + SHA256(raw content))
 ```
 
 generation 固定为:
@@ -100,26 +103,22 @@ sha256-<whole-bundle-digest>
 
 agent 会拒绝 pointer generation 与 bundle digest 不一致的数据.
 
-## 发布事务
+## 分阶段发布
 
-`publish plan` 自动捕获 active pointer 当前的 absent/existing 状态, generation 和 ModRevision. 首次发布和后续发布都不需要调用者手工声明 expected generation. plan 记录 active key 的状态, 本地 bundle digest, generation, 证书/私钥文件绝对路径和各自 SHA-256. plan 不包含私钥内容.
+`pemcast pack` 只读取本地证书和私钥, 不访问 etcd. 它输出:
 
-`publish apply` 重新读取本地材料. 如果 digest 与 plan 不一致, 直接失败. 新 bundle 提交使用一个 etcd transaction:
+- `bundle.json`: canonical deterministic complete JSON bundle.
+- `metadata.json`: schema, prefix, target, generation, keys, encoded size, encoded bundle hash 和每个源文件 hash; 不包含私钥内容.
+- `stage.txn`: etcdctl transaction, 仅当 bundle key 不存在时写入 exact bundle bytes.
 
-```text
-If bundle key absent
-AND active generation == plan expected generation
-AND active ModRevision == plan expected ModRevision
+发布分两步:
 
-Then Put bundle key
-     Put active key = generation
-```
+1. Stage immutable bundle. bundle key 不存在则创建; 已存在则要求 encoded bytes 完全相同. 任何差异都是数据损坏并必须失败.
+2. Capture active pointer 的 generation 和 ModRevision, 再用 etcdctl transaction CAS pointer. 首次发布条件是 `create(active) = 0`; 更新条件是 active value 和 ModRevision 都匹配.
 
-如果 bundle 已存在, 只允许完全相同的 encoded value, 然后单独用 active value + ModRevision CAS 切换 pointer. 如果 plan 捕获的 active generation 已经等于新 generation, apply 直接 no-op. 不同内容使用相同 digest属于数据损坏, 必须失败.
+v5 允许存在未被 active pointer 引用的孤儿 bundle. 这是设计结果, 不是失败: bundle 是 object database, active pointer 是 ref. 消费者只 watch active prefix, 因此 bundle stage 本身没有发布语义. 唯一 commit point 是 pointer CAS 成功.
 
-`publish activate` 用于回滚或重激活已有 generation. 它读取远端 bundle, 严格解码, 校验 generation/digest 和 X509KeyPair, 自动捕获当前 active 状态, 然后用 value + ModRevision CAS 切换 pointer. ModRevision 防止 `g0 -> g1 -> g0` 这类 ABA 竞争.
-
-publish plan 会记录 `etcd-prefix`. `publish apply` 会拒绝 plan prefix 与当前配置 prefix 不一致的 plan, 防止同一个 plan 被应用到错误 namespace.
+发布失败或并发冲突时可能留下已 stage 的 bundle, 可以保留给后续重试或由外部策略清理. active generation 对应的 bundle 必须永远保留.
 
 ## Reconcile
 
@@ -173,17 +172,18 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `cmd/pemcast`: CLI 入口和 signal context.
 - `internal/appcmd/agent`: application 组装, output lock 与 once/watch 生命周期.
 - `internal/appcmd/config`: config example 和校验命令.
-- `internal/appcmd/publish`: `publish inspect/plan/apply/activate` CLI adapter.
+- `internal/appcmd/pack`: local pack CLI adapter.
 - `internal/appcmd/status`: 本地状态 CLI.
 - `internal/config`: schema, defaults, validation 和 cfgm 集成.
-- `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v4` kind-first key builder.
-- `internal/etcdsource`: active-prefix snapshot/watch, exact bundle fetch, atomic transaction.
-- `internal/bundle`: v4 单 key manifest, digest, generation 和 TLS 校验.
+- `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v5` kind-first key builder.
+- `internal/etcdsource`: active-prefix snapshot/watch 和 exact bundle fetch.
+- `internal/bundle`: v5 单 key manifest, digest, generation 和 TLS 校验.
+- `internal/pack`: local TLS 校验, deterministic bundle, metadata 和 stage transaction 生成.
 - `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
 - `internal/hook`: process group, 环境边界, 输出限额和 event schema.
 - `internal/state`: activation/hook state.
-- `internal/publisher`: publisher 领域逻辑, 包含 publish plan, atomic apply 和 activate 状态机.
 - `internal/status`: 只读本地 target 状态.
+- `scripts/publish-v5.sh`: etcdctl staged publication helper.
 
 已知边界: snapshot/watch 与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.
