@@ -11,7 +11,7 @@ generation 由 bundle 内容计算, 操作者不手工命名. 单 key JSON 将�
 
 ```mermaid
 flowchart TD
-    material["证书与私钥"] --> plan["publish plan: 计算 digest + 捕获 active ModRevision"]
+    material["证书与私钥"] --> plan["publish plan: 计算 digest + 自动捕获 active 状态"]
     plan --> apply{"publish apply: 本地材料仍匹配 plan?"}
     apply -->|"否"| stop["拒绝执行"]
     apply -->|"是"| txn["etcd transaction"]
@@ -21,7 +21,7 @@ flowchart TD
     commit --> dryrun["agent --once --dry-run"]
 ```
 
-## 首次发布
+## 发布或首次初始化
 
 生成计划:
 
@@ -30,43 +30,17 @@ pemcast --config /etc/pemcast/config.yaml publish plan \
   --target nginx \
   --certificate fullchain.pem \
   --private-key privkey.pem \
-  --initial \
-  --output first-release.json
+  --output release-plan.json
 ```
 
 执行:
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml publish apply \
-  --plan first-release.json
+  --plan release-plan.json
 ```
 
-## 后续发布
-
-先用只读命令获取当前 active generation 和 ModRevision:
-
-```bash
-pemcast --config /etc/pemcast/config.yaml publish inspect \
-  --target nginx
-```
-
-然后显式写入计划:
-
-```bash
-pemcast --config /etc/pemcast/config.yaml publish plan \
-  --target nginx \
-  --certificate fullchain.pem \
-  --private-key privkey.pem \
-  --expected-active-generation sha256-current \
-  --output release.json
-```
-
-执行:
-
-```bash
-pemcast --config /etc/pemcast/config.yaml publish apply \
-  --plan release.json
-```
+首次发布和后续发布使用同一组命令. `publish inspect` 只作为只读诊断, 不是 plan 的前置步骤.
 
 `publish plan` 会:
 
@@ -74,8 +48,8 @@ pemcast --config /etc/pemcast/config.yaml publish apply \
 2. 校验 `tls.X509KeyPair`.
 3. 计算每个文件的 SHA-256 和 whole-bundle digest.
 4. 推导 `sha256-<digest>` generation.
-5. 检查 active pointer 是否处于显式预期状态.
-6. 记录 active key ModRevision.
+5. 自动捕获 active pointer 的 absent/existing 状态.
+6. 记录 active generation 和 ModRevision.
 7. 输出本地文件路径和 digest, 不输出私钥内容.
 
 `publish apply` 会重新读取本地文件. 如果证书, 私钥或 digest 在 plan 后变化, 直接失败. 新 bundle 走一个 etcd transaction:
@@ -93,24 +67,15 @@ Then Put complete bundle
 
 ## 回滚
 
-回滚不重写 bundle. 先取得当前 active generation 和 active key ModRevision:
-
-```bash
-pemcast --config /etc/pemcast/config.yaml publish inspect \
-  --target nginx
-```
-
-然后执行:
+回滚不重写 bundle. 执行:
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml publish activate \
   --target nginx \
-  --generation sha256-old \
-  --expected-active-generation sha256-current \
-  --expected-active-mod-revision 123
+  --generation sha256-old
 ```
 
-`publish activate` 会严格解码远端 bundle, 校验 digest/generation 和 X509KeyPair. 只有 active value 和 ModRevision 都匹配时才切换. 这可以防止并发发布或 `g0 -> g1 -> g0` ABA 竞争.
+`publish activate` 会严格解码远端 bundle, 校验 digest/generation 和 X509KeyPair, 自动捕获当前 active value 和 ModRevision 后用 CAS 切换. 这可以防止并发发布或 `g0 -> g1 -> g0` ABA 竞争.
 
 ## 发布后验证
 

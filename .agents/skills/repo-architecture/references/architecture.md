@@ -102,12 +102,7 @@ agent 会拒绝 pointer generation 与 bundle digest 不一致的数据.
 
 ## 发布事务
 
-`publish plan` 显式要求两种预期状态之一:
-
-- `--initial`: active pointer 必须不存在.
-- `--expected-active-generation <generation>`: active pointer 必须恰好是该 generation.
-
-plan 记录 active key 的 ModRevision, 本地 bundle digest, generation, 证书/私钥文件绝对路径和各自 SHA-256. plan 不包含私钥内容.
+`publish plan` 自动捕获 active pointer 当前的 absent/existing 状态, generation 和 ModRevision. 首次发布和后续发布都不需要调用者手工声明 expected generation. plan 记录 active key 的状态, 本地 bundle digest, generation, 证书/私钥文件绝对路径和各自 SHA-256. plan 不包含私钥内容.
 
 `publish apply` 重新读取本地材料. 如果 digest 与 plan 不一致, 直接失败. 新 bundle 提交使用一个 etcd transaction:
 
@@ -120,9 +115,9 @@ Then Put bundle key
      Put active key = generation
 ```
 
-如果 bundle 已存在, 只允许完全相同的 encoded value, 然后单独用 active value + ModRevision CAS 切换 pointer. 不同内容使用相同 digest属于数据损坏, 必须失败.
+如果 bundle 已存在, 只允许完全相同的 encoded value, 然后单独用 active value + ModRevision CAS 切换 pointer. 如果 plan 捕获的 active generation 已经等于新 generation, apply 直接 no-op. 不同内容使用相同 digest属于数据损坏, 必须失败.
 
-`publish activate` 用于回滚或重激活已有 generation. 它读取远端 bundle, 严格解码, 校验 generation/digest 和 X509KeyPair, 然后用显式 expected generation + ModRevision CAS 切换 pointer. ModRevision 防止 `g0 -> g1 -> g0` 这类 ABA 竞争.
+`publish activate` 用于回滚或重激活已有 generation. 它读取远端 bundle, 严格解码, 校验 generation/digest 和 X509KeyPair, 自动捕获当前 active 状态, 然后用 value + ModRevision CAS 切换 pointer. ModRevision 防止 `g0 -> g1 -> g0` 这类 ABA 竞争.
 
 ## Reconcile
 

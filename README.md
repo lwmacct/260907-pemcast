@@ -45,7 +45,7 @@ pemcast --config config/config.yaml config validate
 /pemcast/v2/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
-先用只读命令查看远端 active pointer:
+可以用只读命令查看远端 active pointer:
 
 ```bash
 pemcast --config config/config.yaml publish inspect --target nginx
@@ -64,14 +64,13 @@ pemcast --config config/config.yaml publish inspect --target nginx
 }
 ```
 
-再生成显式发布计划. 首次发布使用 `--initial`; 后续发布必须声明当前 active generation:
+再生成发布计划:
 
 ```bash
 pemcast --config config/config.yaml publish plan \
   --target nginx \
   --certificate fullchain.pem \
   --private-key privkey.pem \
-  --expected-active-generation sha256-current \
   --output release-plan.json
 ```
 
@@ -81,9 +80,9 @@ pemcast --config config/config.yaml publish plan \
 pemcast --config config/config.yaml publish apply --plan release-plan.json
 ```
 
-`plan` 会读取 active pointer 的 generation 和 ModRevision, 并校验本地证书/私钥能组成 TLS pair. `apply` 重新读取本地文件, 确认 digest 未变化, 然后在一个 etcd transaction 中同时创建新 bundle 和切换 pointer. transaction 条件包含 bundle absent, active generation match 和 active ModRevision match. 任一条件失败时, bundle 和 pointer 都不会提交.
+`plan` 会自动捕获当前 active pointer 的 absent/existing 状态, generation 和 ModRevision, 并校验本地证书/私钥能组成 TLS pair. 首次发布不需要额外参数. `apply` 重新读取本地文件, 确认 digest 未变化, 然后在一个 etcd transaction 中同时创建新 bundle 和切换 pointer. transaction 条件包含 bundle absent, active generation match 和 active ModRevision match. 任一条件失败时, bundle 和 pointer 都不会提交.
 
-单 key JSON bundle 将文件 base64 内联, 完整 encoded value 最大 1 MiB. 回滚使用 `publish activate`, 它校验已有 bundle 和 TLS pair 后, 用 value + ModRevision CAS 切换 pointer.
+单 key JSON bundle 将文件 base64 内联, 完整 encoded value 最大 1 MiB. 回滚使用 `publish activate`, 它校验已有 bundle 和 TLS pair 后, 自动捕获当前 active 状态并用 value + ModRevision CAS 切换 pointer.
 
 先不落盘测试远端内容:
 
@@ -157,15 +156,8 @@ pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hoo
 发布产物是公开的 standard OCI/Docker image, linux/amd64 二进制固定位于 `/usr/local/bin/pemcast`. GitHub Actions 已有 Docker 服务, 证书签发 workflow 不需要提取二进制, 也不需要额外安装 Go, ORAS 或配置 GHCR 凭据:
 
 ```bash
-_image="ghcr.io/lwmacct/260907-pemcast:v0.3.261009"
+_image="ghcr.io/lwmacct/260907-pemcast:v0.5.261009"
 _work="$(mktemp -d)"
-
-docker run --rm --platform linux/amd64 \
-  -e PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-  -e PEMCAST_AGENT_ETCD_USERNAME='publish' \
-  -e PEMCAST_AGENT_ETCD_PASSWORD='...' \
-  "${_image}" \
-  pemcast publish inspect --target nginx
 
 docker run --rm --platform linux/amd64 \
   --volume "${CERTBOT_OUTPUT_DIR}/cert:/certs:ro" \
@@ -178,7 +170,6 @@ docker run --rm --platform linux/amd64 \
     --target nginx \
     --certificate /certs/fullchain.pem \
     --private-key /certs/privkey.pem \
-    --expected-active-generation sha256-current \
     --output /work/release-plan.json
 
 docker run --rm --platform linux/amd64 \

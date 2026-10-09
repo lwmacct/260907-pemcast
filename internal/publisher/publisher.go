@@ -31,11 +31,9 @@ type KV interface {
 }
 
 type PlanOptions struct {
-	TargetID                 string
-	CertificatePath          string
-	PrivateKeyPath           string
-	ExpectedActiveGeneration string
-	Initial                  bool
+	TargetID        string
+	CertificatePath string
+	PrivateKeyPath  string
 }
 
 type ActiveState struct {
@@ -85,11 +83,8 @@ func Inspect(ctx context.Context, kv KV, targetID string) (ActiveState, error) {
 }
 
 type ActivateOptions struct {
-	TargetID                  string
-	Generation                string
-	ExpectedActiveGeneration  string
-	ExpectedActiveModRevision int64
-	Initial                   bool
+	TargetID   string
+	Generation string
 }
 
 type localMaterial struct {
@@ -102,9 +97,6 @@ func CreatePlan(ctx context.Context, kv KV, options PlanOptions) (Plan, error) {
 	if err := validateTarget(options.TargetID); err != nil {
 		return Plan{}, err
 	}
-	if err := validateExpected(options.ExpectedActiveGeneration, options.Initial); err != nil {
-		return Plan{}, err
-	}
 	material, certificatePath, privateKeyPath, err := readMaterial(options.CertificatePath, options.PrivateKeyPath)
 	if err != nil {
 		return Plan{}, err
@@ -115,7 +107,7 @@ func CreatePlan(ctx context.Context, kv KV, options PlanOptions) (Plan, error) {
 	if _, err := bundle.Encode(material.manifest); err != nil {
 		return Plan{}, err
 	}
-	expected, err := captureActive(ctx, kv, options.TargetID, options.ExpectedActiveGeneration, options.Initial)
+	expected, err := captureActive(ctx, kv, options.TargetID)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -146,7 +138,7 @@ func DecodePlan(data []byte) (Plan, error) {
 	if err := validateTarget(plan.TargetID); err != nil {
 		return Plan{}, err
 	}
-	if err := validateExpected(plan.ExpectedActiveGeneration, !plan.ExpectedActiveExists); err != nil {
+	if err := validateActiveCondition(plan.ExpectedActiveGeneration, plan.ExpectedActiveModRevision, plan.ExpectedActiveExists); err != nil {
 		return Plan{}, err
 	}
 	if plan.Generation != bundle.Generation(plan.BundleSHA256) {
@@ -159,7 +151,7 @@ func Apply(ctx context.Context, kv KV, plan Plan) error {
 	if err := validateTarget(plan.TargetID); err != nil {
 		return err
 	}
-	if err := validateExpected(plan.ExpectedActiveGeneration, !plan.ExpectedActiveExists); err != nil {
+	if err := validateActiveCondition(plan.ExpectedActiveGeneration, plan.ExpectedActiveModRevision, plan.ExpectedActiveExists); err != nil {
 		return err
 	}
 	material, _, _, err := readMaterial(plan.CertificatePath, plan.PrivateKeyPath)
@@ -203,6 +195,9 @@ func Apply(ctx context.Context, kv KV, plan Plan) error {
 	if existing.Data != string(encoded) {
 		return fmt.Errorf("content-addressed generation %q contains different data", plan.Generation)
 	}
+	if expected.Exists && expected.Generation == plan.Generation {
+		return nil
+	}
 	updated, err := kv.SwapActive(ctx, activeKey, plan.Generation, expected)
 	if err != nil {
 		return err
@@ -220,15 +215,9 @@ func Activate(ctx context.Context, kv KV, options ActivateOptions) error {
 	if !bundle.SafeName(options.Generation) {
 		return fmt.Errorf("generation %q is unsafe", options.Generation)
 	}
-	if err := validateExpected(options.ExpectedActiveGeneration, options.Initial); err != nil {
-		return err
-	}
-	expected, err := captureActive(ctx, kv, options.TargetID, options.ExpectedActiveGeneration, options.Initial)
+	expected, err := captureActive(ctx, kv, options.TargetID)
 	if err != nil {
 		return err
-	}
-	if expected.ModRevision != options.ExpectedActiveModRevision {
-		return fmt.Errorf("active pointer ModRevision is %d, expected %d", expected.ModRevision, options.ExpectedActiveModRevision)
 	}
 	bundleKey := etcdsource.BundleKey(options.TargetID, options.Generation)
 	value, err := kv.Get(ctx, bundleKey)
@@ -252,6 +241,9 @@ func Activate(ctx context.Context, kv KV, options ActivateOptions) error {
 	if _, err := bundle.ValidateKeyPair(files[pair.Certificate], files[pair.PrivateKey]); err != nil {
 		return err
 	}
+	if expected.Exists && expected.Generation == options.Generation {
+		return nil
+	}
 
 	updated, err := kv.SwapActive(ctx, etcdsource.ActiveKey(options.TargetID), options.Generation, expected)
 	if err != nil {
@@ -263,30 +255,18 @@ func Activate(ctx context.Context, kv KV, options ActivateOptions) error {
 	return nil
 }
 
-func captureActive(ctx context.Context, kv KV, targetID, expectedGeneration string, initial bool) (etcdsource.ActiveCondition, error) {
+func captureActive(ctx context.Context, kv KV, targetID string) (etcdsource.ActiveCondition, error) {
 	value, err := kv.Get(ctx, etcdsource.ActiveKey(targetID))
 	if err != nil {
 		return etcdsource.ActiveCondition{}, fmt.Errorf("read active pointer: %w", err)
 	}
-	if initial {
-		if value.Exists {
-			return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer already exists with generation %q", value.Data)
-		}
-		return etcdsource.ActiveCondition{}, nil
-	}
-	if !value.Exists {
-		return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer is missing; use --initial for first publication")
-	}
-	if value.Data != expectedGeneration {
-		return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer is %q, expected %q", value.Data, expectedGeneration)
-	}
-	if !bundle.SafeName(value.Data) {
+	if value.Exists && !bundle.SafeName(value.Data) {
 		return etcdsource.ActiveCondition{}, fmt.Errorf("active pointer %q is unsafe", value.Data)
 	}
 	return etcdsource.ActiveCondition{
 		Generation:  value.Data,
 		ModRevision: value.ModRevision,
-		Exists:      true,
+		Exists:      value.Exists,
 	}, nil
 }
 
@@ -338,12 +318,18 @@ func validateTarget(targetID string) error {
 	return nil
 }
 
-func validateExpected(expectedGeneration string, initial bool) error {
-	if initial == (expectedGeneration != "") {
-		return fmt.Errorf("specify exactly one of --initial or --expected-active-generation")
+func validateActiveCondition(generation string, modRevision int64, exists bool) error {
+	if exists {
+		if generation == "" || !bundle.SafeName(generation) {
+			return fmt.Errorf("expected active generation %q is unsafe", generation)
+		}
+		if modRevision <= 0 {
+			return fmt.Errorf("expected active ModRevision must be positive when the active pointer exists")
+		}
+		return nil
 	}
-	if expectedGeneration != "" && !bundle.SafeName(expectedGeneration) {
-		return fmt.Errorf("expected active generation %q is unsafe", expectedGeneration)
+	if generation != "" || modRevision != 0 {
+		return fmt.Errorf("expected active generation and ModRevision must be empty when the active pointer is absent")
 	}
 	return nil
 }

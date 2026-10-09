@@ -53,13 +53,11 @@ var inspectCommand = &cli.Command{
 
 var planCommand = &cli.Command{
 	Name:  "plan",
-	Usage: "validate local material and capture an explicit remote expected state",
+	Usage: "validate local material and capture the remote expected state",
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "target", Usage: "target ID", Required: true},
 		&cli.StringFlag{Name: "certificate", Usage: "path to fullchain.pem", Required: true},
 		&cli.StringFlag{Name: "private-key", Usage: "path to privkey.pem", Required: true},
-		&cli.StringFlag{Name: "expected-active-generation", Usage: "generation that the active pointer must currently contain"},
-		&cli.BoolFlag{Name: "initial", Usage: "require the active pointer to be absent"},
 		&cli.StringFlag{Name: "output", Usage: "write the plan to this file instead of standard output"},
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
@@ -74,11 +72,9 @@ var planCommand = &cli.Command{
 		defer func() { _ = client.Close() }()
 
 		plan, err := publisher.CreatePlan(ctx, client, publisher.PlanOptions{
-			TargetID:                 command.String("target"),
-			CertificatePath:          command.String("certificate"),
-			PrivateKeyPath:           command.String("private-key"),
-			ExpectedActiveGeneration: command.String("expected-active-generation"),
-			Initial:                  command.Bool("initial"),
+			TargetID:        command.String("target"),
+			CertificatePath: command.String("certificate"),
+			PrivateKeyPath:  command.String("private-key"),
 		})
 		if err != nil {
 			return err
@@ -130,23 +126,15 @@ var applyCommand = &cli.Command{
 
 var activateCommand = &cli.Command{
 	Name:  "activate",
-	Usage: "verify an existing immutable generation and move the active pointer by ModRevision CAS",
+	Usage: "verify an existing immutable generation and atomically activate it",
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "target", Usage: "target ID", Required: true},
 		&cli.StringFlag{Name: "generation", Usage: "existing content-addressed generation", Required: true},
-		&cli.StringFlag{Name: "expected-active-generation", Usage: "generation that the active pointer must currently contain"},
-		&cli.Int64Flag{Name: "expected-active-mod-revision", Usage: "ModRevision captured from etcd for the expected active pointer"},
-		&cli.BoolFlag{Name: "initial", Usage: "require the active pointer to be absent"},
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
 		cfg, err := loadConfig(ctx, command)
 		if err != nil {
 			return err
-		}
-		initial := command.Bool("initial")
-		expectedRevision := command.Int64("expected-active-mod-revision")
-		if !initial && expectedRevision == 0 {
-			return fmt.Errorf("--expected-active-mod-revision is required unless --initial is set")
 		}
 		client, err := etcdsource.New(cfg.Agent.Etcd)
 		if err != nil {
@@ -157,11 +145,8 @@ var activateCommand = &cli.Command{
 		target := command.String("target")
 		generation := command.String("generation")
 		if err := publisher.Activate(ctx, client, publisher.ActivateOptions{
-			TargetID:                  target,
-			Generation:                generation,
-			ExpectedActiveGeneration:  command.String("expected-active-generation"),
-			ExpectedActiveModRevision: expectedRevision,
-			Initial:                   initial,
+			TargetID:   target,
+			Generation: generation,
 		}); err != nil {
 			return err
 		}
