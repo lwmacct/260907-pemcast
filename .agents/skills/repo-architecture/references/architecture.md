@@ -1,4 +1,4 @@
-# pemcast v3 架构
+# pemcast v4 架构
 
 ## 定位
 
@@ -10,12 +10,12 @@ pemcast 是一个 pull-only certificate agent. publisher 从证书内容计算 c
 
 启动时校验配置. 非 dry-run agent 按排序获取每个 output root 的排他文件锁, 懒创建 state directory, 构造 etcd client, 并组装 reconcile controller. dry-run 不创建 state directory, 不读取 state, 不获取 output root 锁.
 
-`agent --once` 在一个 etcd transaction 中读取所有配置 target 的 exact active key, 得到同一个 revision 的 snapshot, 然后 reconcile 配置 target. 普通 agent 循环执行:
+`agent --once` 一次 range read 读取 active prefix 下全部 pointer, 得到同一个 revision 的 snapshot, 然后 reconcile 配置 target 的交集. 普通 agent 循环执行:
 
-1. 读取配置 target 的 exact active key, 记录同一个 etcd revision.
+1. Range read active prefix, 记录 etcd revision.
 2. 并发 reconcile snapshot.
-3. 从 `snapshot.Revision + 1` 开始为每个配置 target 启动 exact-key watcher.
-4. 处理 pointer put/delete, 并合并多个 watcher 事件.
+3. 从 `snapshot.Revision + 1` 开始监听 active prefix.
+4. 处理 pointer put/delete; bundle 写入不会产生 watch 事件.
 5. 到达 `resync-interval` 时放弃 watch, 从新 snapshot 重启.
 6. snapshot/watch 失败时使用有界指数退避和 jitter 重试.
 
@@ -46,20 +46,20 @@ sequenceDiagram
     C->>S: 原子保存 state
 ```
 
-## v3 远端模型
+## v4 远端模型
 
-etcd namespace prefix 可配置, 默认 `/pemcast`. 固定子协议是 `/v3`, target 是第一层级:
+etcd namespace prefix 可配置, 默认 `/pemcast`. 固定子协议是 kind-first `/v4`:
 
 ```text
-<etcd-prefix>/v3/<target-id>/active = <generation>
-<etcd-prefix>/v3/<target-id>/bundles/<generation> = <complete JSON bundle>
+<etcd-prefix>/v4/active/<target-id> = <generation>
+<etcd-prefix>/v4/bundles/<target-id>/<generation> = <complete JSON bundle>
 ```
 
 bundle 是单 key JSON, 文件内容 base64 内联:
 
 ```json
 {
-  "schema": "pemcast/v3",
+  "schema": "pemcast/v4",
   "files": [
     {
       "name": "fullchain.pem",
@@ -89,7 +89,7 @@ bundle 是单 key JSON, 文件内容 base64 内联:
 whole-bundle digest 按排序后的文件名和原始内容 SHA-256 计算:
 
 ```text
-SHA256("pemcast/v3" + NUL + for each sorted file: name + NUL + SHA256(raw content))
+SHA256("pemcast/v4" + NUL + for each sorted file: name + NUL + SHA256(raw content))
 ```
 
 generation 固定为:
@@ -176,9 +176,9 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/appcmd/publish`: `publish inspect/plan/apply/activate` CLI adapter.
 - `internal/appcmd/status`: 本地状态 CLI.
 - `internal/config`: schema, defaults, validation 和 cfgm 集成.
-- `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v3` target-first key builder.
-- `internal/etcdsource`: configured target exact-key snapshot/watch/fetch, atomic transaction.
-- `internal/bundle`: v3 单 key manifest, digest, generation 和 TLS 校验.
+- `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v4` kind-first key builder.
+- `internal/etcdsource`: active-prefix snapshot/watch, exact bundle fetch, atomic transaction.
+- `internal/bundle`: v4 单 key manifest, digest, generation 和 TLS 校验.
 - `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
 - `internal/hook`: process group, 环境边界, 输出限额和 event schema.

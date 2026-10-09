@@ -185,9 +185,9 @@ __main() {
         done < <(printf '%s\n' "$PEMCAST_TARGETS" | tr ',' '\n')
     fi
 
-    _protocol_root="$(__normalize_prefix "$_etcd_prefix")/v3"
-    if [[ "$_protocol_root" == "//v3" ]]; then
-        _protocol_root="/v3"
+    _protocol_root="$(__normalize_prefix "$_etcd_prefix")/v4"
+    if [[ "$_protocol_root" == "//v4" ]]; then
+        _protocol_root="/v4"
     fi
 
     if [[ ${#_raw_targets[@]} -eq 0 ]]; then
@@ -235,7 +235,7 @@ __main() {
 
     _root_password="$(__read_password 'etcd root password: ')"
     _agent_password="$(__read_password "etcd ${_agent_user} password: ")"
-    _publish_password="$(__read_password "etcd ${_publisher_user} password: ")"
+    _publisher_password="$(__read_password "etcd ${_publisher_user} password: ")"
 
     _auth_status="$(__etcdctl_as_root auth status)"
     if ! grep -q 'Authentication Status: true' <<<"$_auth_status"; then
@@ -244,47 +244,51 @@ __main() {
     fi
 
     __ensure_user "$_agent_user" "$_agent_password"
-    __ensure_user "$_publisher_user" "$_publish_password"
+    __ensure_user "$_publisher_user" "$_publisher_password"
+
+    _active_prefix="${_protocol_root}/active/"
+    _bundles_prefix="${_protocol_root}/bundles/"
+    _agent_active_role="agent-active:${_protocol_root}"
+    __ensure_role "$_agent_active_role"
+    __ensure_permission "$_agent_active_role" read "$_active_prefix" prefix
+    __ensure_user_role "$_agent_user" "$_agent_active_role"
 
     for _target in "${_targets[@]}"; do
-        _active_key="${_protocol_root}/${_target}/active"
-        _bundles_prefix="${_protocol_root}/${_target}/bundles/"
-        _agent_role="agent:${_protocol_root}:${_target}"
+        _active_key="${_active_prefix}${_target}"
+        _target_bundles_prefix="${_bundles_prefix}${_target}/"
+        _agent_bundle_role="agent-bundles:${_protocol_root}:${_target}"
         _publisher_role="publisher:${_protocol_root}:${_target}"
 
-        __ensure_role "$_agent_role"
+        __ensure_role "$_agent_bundle_role"
+        __ensure_permission "$_agent_bundle_role" read "$_target_bundles_prefix" prefix
+        __ensure_user_role "$_agent_user" "$_agent_bundle_role"
+
         __ensure_role "$_publisher_role"
-
-        __ensure_permission "$_agent_role" read "$_active_key"
-        __ensure_permission "$_agent_role" read "$_bundles_prefix" prefix
         __ensure_permission "$_publisher_role" readwrite "$_active_key"
-        __ensure_permission "$_publisher_role" readwrite "$_bundles_prefix" prefix
-
-        __ensure_user_role "$_agent_user" "$_agent_role"
+        __ensure_permission "$_publisher_role" readwrite "$_target_bundles_prefix" prefix
         __ensure_user_role "$_publisher_user" "$_publisher_role"
     done
 
     for _target in "${_targets[@]}"; do
         ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get \
-            "${_protocol_root}/${_target}/active" >/dev/null
+            "${_active_prefix}${_target}" >/dev/null
     done
+
+    _probe_target="${_targets[0]}"
+    _probe_key="${_bundles_prefix}${_probe_target}/rbac-probe-$$"
+    ETCDCTL_USER="${_publisher_user}:$_publisher_password" etcdctl put "$_probe_key" probe >/dev/null
+    ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get "$_probe_key" >/dev/null
+    ETCDCTL_USER="${_publisher_user}:$_publisher_password" etcdctl del "$_probe_key" >/dev/null
 
     _denied_target="rbac-denied-$$"
     if ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get \
-        "${_protocol_root}/${_denied_target}/active" >/dev/null 2>&1; then
-        printf 'agent unexpectedly has access to an unauthorized target\n' >&2
+        "${_bundles_prefix}${_denied_target}/probe" >/dev/null 2>&1; then
+        printf 'agent unexpectedly has access to an unauthorized target bundle\n' >&2
         return 1
     fi
-
-    _probe_target="${_targets[0]}"
-    _probe_key="${_protocol_root}/${_probe_target}/bundles/rbac-probe-$$"
-    ETCDCTL_USER="${_publisher_user}:$_publish_password" etcdctl put "$_probe_key" probe >/dev/null
-    ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get "$_probe_key" >/dev/null
-    ETCDCTL_USER="${_publisher_user}:$_publish_password" etcdctl del "$_probe_key" >/dev/null
-
     if ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl put "$_probe_key" denied >/dev/null 2>&1; then
         printf 'agent unexpectedly has bundle write permission\n' >&2
-        ETCDCTL_USER="${_publisher_user}:$_publish_password" etcdctl del "$_probe_key" >/dev/null || true
+        ETCDCTL_USER="${_publisher_user}:$_publisher_password" etcdctl del "$_probe_key" >/dev/null || true
         return 1
     fi
     if env -u ETCDCTL_USER etcdctl get "$_probe_key" >/dev/null 2>&1; then
@@ -292,7 +296,7 @@ __main() {
         return 1
     fi
 
-    printf 'pemcast v3 target RBAC initialized below %s for users %s/%s: %s\n' \
+    printf 'pemcast v4 RBAC initialized below %s for users %s/%s: %s\n' \
         "$_protocol_root" "$_agent_user" "$_publisher_user" "${_targets[*]}"
 }
 

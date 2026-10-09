@@ -38,11 +38,11 @@ pemcast config example > config/config.yaml
 pemcast --config config/config.yaml config validate
 ```
 
-etcd namespace prefix 由 `agent.etcd.prefix` 配置, 默认 `/pemcast`. 环境变量是 `PEMCAST_AGENT_ETCD_PREFIX`, agent CLI 支持 `--etcd.prefix` 和别名 `--etcd-prefix`, publisher CLI 支持 `--etcd-prefix`. 程序只硬编码 `/v3` 子协议. 以 prefix `/pemcast`, target `nginx` 为例:
+etcd namespace prefix 由 `agent.etcd.prefix` 配置, 默认 `/pemcast`. 环境变量是 `PEMCAST_AGENT_ETCD_PREFIX`, agent CLI 支持 `--etcd.prefix` 和别名 `--etcd-prefix`, publisher CLI 支持 `--etcd-prefix`. 程序只硬编码 `/v4` 子协议. 以 prefix `/pemcast`, target `nginx` 为例:
 
 ```text
-/pemcast/v3/nginx/active = sha256-<bundle-digest>
-/pemcast/v3/nginx/bundles/sha256-<bundle-digest> = complete JSON bundle
+/pemcast/v4/active/nginx = sha256-<bundle-digest>
+/pemcast/v4/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
 可以用只读命令查看远端 active pointer:
@@ -98,7 +98,7 @@ pemcast --config config/config.yaml agent --once
 pemcast --config config/config.yaml agent
 ```
 
-agent 不再 range 或 watch 全局 active prefix. 它会在一个 etcd transaction 中读取所有配置 target 的 exact active key, 记录同一个 revision, 然后为每个配置 target 启动 exact-key watcher. 未配置或未授权的 target 不会被读取.
+agent 会一次 range read 读取 active prefix 下全部 pointer, 记录同一个 revision, 然后只监听 active prefix. Bundle 写入不会产生 watch 事件. Controller 只 reconcile 配置中的 target, bundle fetch 仍使用 exact key.
 
 本地布局为:
 
@@ -154,18 +154,18 @@ pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hoo
 
 配置会拒绝重复或祖先/后代重叠的 output root. 同一个 root 的第二个 agent 进程会因文件锁立即失败.
 
-## target 级 RBAC
+## 租户 prefix 与 target 级 bundle RBAC
 
-agent 保持只读. publisher 单独具备写入权限:
+agent 保持只读. publisher 单独具备写入权限. active prefix 是租户内控制面, bundle 是敏感数据面:
 
 ```text
-agent:<etcd-prefix>/v3:<target-id> read <etcd-prefix>/v3/<target-id>/active
-agent:<etcd-prefix>/v3:<target-id> read <etcd-prefix>/v3/<target-id>/bundles/ prefix
-publisher:<etcd-prefix>/v3:<target-id> readwrite <etcd-prefix>/v3/<target-id>/active
-publisher:<etcd-prefix>/v3:<target-id> readwrite <etcd-prefix>/v3/<target-id>/bundles/ prefix
+agent-active:<etcd-prefix>/v4 read <etcd-prefix>/v4/active/ prefix
+agent-bundles:<etcd-prefix>/v4:<target-id> read <etcd-prefix>/v4/bundles/<target-id>/ prefix
+publisher:<etcd-prefix>/v4:<target-id> readwrite <etcd-prefix>/v4/active/<target-id>
+publisher:<etcd-prefix>/v4:<target-id> readwrite <etcd-prefix>/v4/bundles/<target-id>/ prefix
 ```
 
-一个 etcd user 可以挂多个 target role. 例如 `agent-node-a` 只挂 `nginx` 和 `api` 两个 agent role. 不同租户可以使用不同 `agent.etcd.prefix`, 也可以使用不同 etcd user.
+一个 etcd user 可以挂一个 active reader role 和多个 target bundle role. 例如 `agent-node-a` 读取租户 active metadata, 但只能读取 `nginx` 和 `api` 的私钥 bundle. 不同租户使用不同 `agent.etcd.prefix`, 也建议使用不同 etcd user.
 
 初始化或追加 target 授权:
 
@@ -178,14 +178,14 @@ bash .agents/skills/repo-deployment/scripts/init-rbac.sh \
   nginx api.example.com
 ```
 
-脚本会验证授权 target 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target 读取被拒绝.
+脚本会验证授权 active/bundle 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target bundle 读取被拒绝.
 
 ## CI 中直接运行 publisher
 
 发布产物是公开的 standard OCI/Docker image, linux/amd64 二进制固定位于 `/usr/local/bin/pemcast`. GitHub Actions 已有 Docker 服务, 证书签发 workflow 不需要提取二进制, 也不需要额外安装 Go, ORAS 或配置 GHCR 凭据:
 
 ```bash
-_image="ghcr.io/lwmacct/260907-pemcast:v0.6.261009"
+_image="ghcr.io/lwmacct/260907-pemcast:v0.7.261009"
 _work="$(mktemp -d)"
 
 docker run --rm --platform linux/amd64 \
@@ -218,16 +218,16 @@ docker run --rm --platform linux/amd64 \
 
 plan 会记录容器内 `/certs/...` 绝对路径和 etcd prefix, 因此 `plan` 和 `apply` 必须使用相同的证书挂载点与 `--etcd-prefix`. 使用 exact version tag 或 digest. 如 etcd 使用 mTLS, 同时挂载 CA/client cert/key 并通过 `PEMCAST_AGENT_ETCD_TLS_*` 环境变量传入容器内路径.
 
-## v2 到 v3 破坏式切换
+## v3 到 v4 破坏式切换
 
-pemcast v3 不读取, 不迁移和不兼容 v2 数据. 推荐切换顺序:
+pemcast v4 不读取, 不迁移和不兼容 v2/v3 数据. 推荐切换顺序:
 
-1. 初始化 v3 target roles/users.
-2. 使用 v3 publisher 将现有证书重新发布到 `<prefix>/v3/<target>/...`.
-3. 将 agent 配置和镜像升级到 v3, 保持同一个 `agent.etcd.prefix`.
+1. 初始化 v4 active reader, target bundle 和 publisher roles/users.
+2. 使用 v4 publisher 将现有证书重新发布到 `<prefix>/v4/...`.
+3. 将 agent 配置和镜像升级到 v4, 保持同一个 `agent.etcd.prefix`.
 4. 执行 `agent --once --dry-run`, 再执行一次同步或重启 watch agent.
-5. 用 `etcdctl` 核对 v3 active/bundle 和未授权访问.
-6. 确认消费端证书正常后, 删除旧 `/pemcast/v2` prefix 和旧全局 roles/users.
+5. 用 `etcdctl` 核对 v4 active/bundle 和未授权访问.
+6. 确认消费端证书正常后, 删除旧 `/pemcast/v2` 与 `/pemcast/v3` prefix 和旧 roles/users.
 
 ## Hook 契约
 

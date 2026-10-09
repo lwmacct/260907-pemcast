@@ -1,10 +1,10 @@
-# 发布 pemcast v3 bundle
+# 发布 pemcast v4 bundle
 
-etcd namespace prefix 默认 `/pemcast`, 可通过 `agent.etcd.prefix` 或 `--etcd-prefix` 配置. 固定子协议是 `/v3/<target-id>/...`:
+etcd namespace prefix 默认 `/pemcast`, 可通过 `agent.etcd.prefix` 或 `--etcd-prefix` 配置. 固定子协议是 kind-first `/v4`:
 
 ```text
-/pemcast/v3/nginx/active = sha256-<bundle-digest>
-/pemcast/v3/nginx/bundles/sha256-<bundle-digest> = complete JSON bundle
+/pemcast/v4/active/nginx = sha256-<bundle-digest>
+/pemcast/v4/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
 generation 由 bundle 内容计算, 操作者不手工命名. 单 key JSON 将证书和私钥 base64 内联, 完整 encoded value 最大 1 MiB.
@@ -95,6 +95,6 @@ pemcast --config /etc/pemcast/config.yaml status --json
 
 - 不修改已暴露的 generation.
 - 不手工指定或复用 generation 名.
-- 不用 etcdctl 常规写入 v3 数据.
+- 不用 etcdctl 常规写入 v4 数据.
 - plan 文件权限应为 0600, 因为它暴露证书路径和 digest 元数据.
 - 远端历史 bundle 清理由独立运维策略负责, 必须永远保留 active generation.

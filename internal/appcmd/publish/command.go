@@ -162,7 +162,7 @@ var activateCommand = &cli.Command{
 func etcdPrefixFlag() cli.Flag {
 	return &cli.StringFlag{
 		Name:  "etcd-prefix",
-		Usage: "etcd namespace prefix placed before /v3",
+		Usage: "etcd namespace prefix placed before /v4",
 		Value: config.DefaultEtcdPrefix,
 	}
 }

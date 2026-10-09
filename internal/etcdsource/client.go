@@ -1,4 +1,4 @@
-// Package etcdsource reads immutable pemcast v3 bundles and target active pointers from etcd.
+// Package etcdsource reads immutable pemcast v4 bundles and active pointers from etcd.
 package etcdsource
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
-// ProtocolRoot is the fixed target-first protocol root below the configured etcd prefix.
+// ProtocolRoot is the fixed kind-first protocol root below the configured etcd prefix.
 const ProtocolRoot = keyspace.ProtocolRoot
 
 // DefaultPrefix is the default configurable etcd namespace prefix.
@@ -69,9 +69,19 @@ func (c *Client) BundleKey(targetID, generation string) string {
 	return c.keys.BundleKey(targetID, generation)
 }
 
-// TargetPrefix returns one target's RBAC isolation boundary.
-func (c *Client) TargetPrefix(targetID string) string {
-	return c.keys.TargetPrefix(targetID)
+// ActivePrefix returns the contiguous active-pointer prefix.
+func (c *Client) ActivePrefix() string {
+	return c.keys.ActivePrefix()
+}
+
+// BundlePrefix returns the immutable bundle prefix.
+func (c *Client) BundlePrefix() string {
+	return c.keys.BundlePrefix()
+}
+
+// TargetBundlePrefix returns one target's immutable bundle prefix.
+func (c *Client) TargetBundlePrefix(targetID string) string {
+	return c.keys.TargetBundlePrefix(targetID)
 }
 
 func buildTLSConfig(cfg config.EtcdTLS) (*tls.Config, error) {

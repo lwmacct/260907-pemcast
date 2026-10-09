@@ -1,4 +1,4 @@
-// Package keyspace defines the configurable etcd namespace and fixed target-first protocol paths.
+// Package keyspace defines the configurable etcd namespace and fixed kind-first protocol paths.
 package keyspace
 
 import (
@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// ProtocolRoot is the fixed target-first v3 protocol path below the configured etcd prefix.
-const ProtocolRoot = "/v3"
+// ProtocolRoot is the fixed kind-first v4 protocol path below the configured etcd prefix.
+const ProtocolRoot = "/v4"
 
 // DefaultPrefix is the default etcd namespace in front of ProtocolRoot.
 const DefaultPrefix = "/pemcast"
@@ -55,20 +55,30 @@ func safePrefixComponent(component string) bool {
 // Prefix returns the normalized namespace prefix.
 func (k Keys) Prefix() string { return k.prefix }
 
-// Root returns the configured prefix plus the fixed v3 protocol root.
+// Root returns the configured prefix plus the fixed v4 protocol root.
 func (k Keys) Root() string { return path.Join(k.prefix, ProtocolRoot) }
 
-// TargetPrefix returns the RBAC isolation boundary for one target.
-func (k Keys) TargetPrefix(targetID string) string {
-	return k.Root() + "/" + targetID + "/"
+// ActivePrefix returns the contiguous control-plane prefix containing every active pointer.
+func (k Keys) ActivePrefix() string {
+	return k.Root() + "/active/"
 }
 
-// ActiveKey returns one target's active pointer key below its target prefix.
+// ActiveKey returns one target's active pointer key.
 func (k Keys) ActiveKey(targetID string) string {
-	return k.Root() + "/" + targetID + "/active"
+	return k.ActivePrefix() + targetID
 }
 
-// BundleKey returns one immutable bundle path below its target prefix.
+// BundlePrefix returns the data-plane prefix containing every immutable bundle.
+func (k Keys) BundlePrefix() string {
+	return k.Root() + "/bundles/"
+}
+
+// TargetBundlePrefix returns the data-plane prefix for one target.
+func (k Keys) TargetBundlePrefix(targetID string) string {
+	return k.BundlePrefix() + targetID + "/"
+}
+
+// BundleKey returns one immutable bundle path.
 func (k Keys) BundleKey(targetID, generation string) string {
-	return k.Root() + "/" + targetID + "/bundles/" + generation
+	return k.TargetBundlePrefix(targetID) + generation
 }

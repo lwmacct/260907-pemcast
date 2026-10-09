@@ -45,15 +45,17 @@ func TestMaterialFromValueRejectsMalformedBundle(t *testing.T) {
 	require.ErrorContains(t, err, "decode bundle")
 }
 
-func TestProtocolKeysUseTargetFirstV3Root(t *testing.T) {
+func TestProtocolKeysUseKindFirstV4Root(t *testing.T) {
 	client := newClient(nil, time.Second)
-	require.Equal(t, "/v3", ProtocolRoot)
+	require.Equal(t, "/v4", ProtocolRoot)
 	require.Equal(t, "/pemcast", client.Prefix())
-	require.Equal(t, "/pemcast/v3/nginx/", client.TargetPrefix("nginx"))
-	require.Equal(t, "/pemcast/v3/nginx/active", client.ActiveKey("nginx"))
+	require.Equal(t, "/pemcast/v4/active/", client.ActivePrefix())
+	require.Equal(t, "/pemcast/v4/active/nginx", client.ActiveKey("nginx"))
+	require.Equal(t, "/pemcast/v4/bundles/", client.BundlePrefix())
+	require.Equal(t, "/pemcast/v4/bundles/nginx/", client.TargetBundlePrefix("nginx"))
 	require.Equal(
 		t,
-		"/pemcast/v3/nginx/bundles/sha256-value",
+		"/pemcast/v4/bundles/nginx/sha256-value",
 		client.BundleKey("nginx", "sha256-value"),
 	)
 
@@ -61,89 +63,58 @@ func TestProtocolKeysUseTargetFirstV3Root(t *testing.T) {
 	require.NoError(t, err)
 	client.keys = customKeys
 	require.Equal(t, "/tenants/example", client.Prefix())
-	require.Equal(t, "/tenants/example/v3/nginx/active", client.ActiveKey("nginx"))
+	require.Equal(t, "/tenants/example/v4/active/nginx", client.ActiveKey("nginx"))
+	require.Equal(
+		t,
+		"/tenants/example/v4/bundles/nginx/sha256-value",
+		client.BundleKey("nginx", "sha256-value"),
+	)
 }
 
-func TestTargetIDSetRejectsEmptyUnsafeAndDuplicateIDs(t *testing.T) {
+func TestSnapshotFromResponseKeepsAllTargetsAtOneRevision(t *testing.T) {
 	client := newClient(nil, time.Second)
-	_, err := client.targetIDSet(nil)
-	require.ErrorContains(t, err, "at least one target ID")
+	response := rangeResponse(42, []*mvccpb.KeyValue{
+		{
+			Key:         []byte(client.ActiveKey("nginx")),
+			Value:       []byte("sha256-current"),
+			ModRevision: 41,
+		},
+		{
+			Key:         []byte(client.ActiveKey("api")),
+			Value:       []byte("sha256-api"),
+			ModRevision: 40,
+		},
+	})
 
-	_, err = client.targetIDSet([]string{"../unsafe"})
-	require.ErrorContains(t, err, "unsafe target id")
-
-	_, err = client.targetIDSet([]string{"nginx", "nginx"})
-	require.ErrorContains(t, err, "duplicated")
-
-	targets, err := client.targetIDSet([]string{"nginx", "api"})
-	require.NoError(t, err)
-	require.Equal(t, map[string]string{
-		client.ActiveKey("nginx"): "nginx",
-		client.ActiveKey("api"):   "api",
-	}, targets)
-}
-
-func TestSnapshotFromTxnResponseKeepsConfiguredTargetsAtOneRevision(t *testing.T) {
-	client := newClient(nil, time.Second)
-	targets, err := client.targetIDSet([]string{"nginx", "missing"})
-	require.NoError(t, err)
-	response := txnResponse(42, []*mvccpb.KeyValue{{
-		Key:         []byte(client.ActiveKey("nginx")),
-		Value:       []byte("sha256-current"),
-		ModRevision: 41,
-	}, nil})
-
-	snapshot, err := snapshotFromTxnResponse(response, targets)
+	snapshot, err := snapshotFromResponse(response, client.ActivePrefix())
 	require.NoError(t, err)
 	require.Equal(t, int64(42), snapshot.Revision)
-	require.Equal(t, map[string]string{"nginx": "sha256-current"}, snapshot.Active)
+	require.Equal(t, map[string]string{
+		"nginx": "sha256-current",
+		"api":   "sha256-api",
+	}, snapshot.Active)
 }
 
-func TestSnapshotFromTxnResponseRejectsUnexpectedAndUnsafeKeys(t *testing.T) {
+func TestSnapshotFromResponseRejectsUnsafeKeysAndGenerations(t *testing.T) {
 	client := newClient(nil, time.Second)
-	targets, err := client.targetIDSet([]string{"nginx"})
-	require.NoError(t, err)
-
-	response := txnResponse(42, []*mvccpb.KeyValue{{
-		Key:   []byte(client.ActiveKey("other")),
+	response := rangeResponse(42, []*mvccpb.KeyValue{{
+		Key:   []byte(client.ActivePrefix() + "../unsafe"),
 		Value: []byte("sha256-current"),
 	}})
-	_, err = snapshotFromTxnResponse(response, targets)
-	require.ErrorContains(t, err, "unexpected key")
+	_, err := snapshotFromResponse(response, client.ActivePrefix())
+	require.ErrorContains(t, err, "invalid active pointer")
 
-	response = txnResponse(42, []*mvccpb.KeyValue{{
+	response = rangeResponse(42, []*mvccpb.KeyValue{{
 		Key:   []byte(client.ActiveKey("nginx")),
 		Value: []byte("../unsafe"),
 	}})
-	_, err = snapshotFromTxnResponse(response, targets)
+	_, err = snapshotFromResponse(response, client.ActivePrefix())
 	require.ErrorContains(t, err, "invalid active pointer")
 }
 
-func TestSnapshotFromTxnResponseRejectsWrongResponseCount(t *testing.T) {
-	client := newClient(nil, time.Second)
-	targets, err := client.targetIDSet([]string{"nginx", "missing"})
-	require.NoError(t, err)
-	response := txnResponse(42, nil)
-
-	_, err = snapshotFromTxnResponse(response, targets)
-	require.ErrorContains(t, err, "want 2")
-}
-
-func txnResponse(revision int64, kvs []*mvccpb.KeyValue) *clientv3.TxnResponse {
-	responses := make([]*pb.ResponseOp, 0, len(kvs))
-	for _, kv := range kvs {
-		responseKvs := []*mvccpb.KeyValue(nil)
-		if kv != nil {
-			responseKvs = []*mvccpb.KeyValue{kv}
-		}
-		responses = append(responses, &pb.ResponseOp{
-			Response: &pb.ResponseOp_ResponseRange{
-				ResponseRange: &pb.RangeResponse{Kvs: responseKvs},
-			},
-		})
-	}
-	return &clientv3.TxnResponse{
-		Header:    &pb.ResponseHeader{Revision: revision},
-		Responses: responses,
+func rangeResponse(revision int64, kvs []*mvccpb.KeyValue) *clientv3.GetResponse {
+	return &clientv3.GetResponse{
+		Header: &pb.ResponseHeader{Revision: revision},
+		Kvs:    kvs,
 	}
 }

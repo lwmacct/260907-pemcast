@@ -10,7 +10,7 @@ agent:
 
   # etcd client configuration
   etcd:
-    prefix: "/pemcast" # etcd namespace prefix placed before /v3
+    prefix: "/pemcast" # etcd namespace prefix placed before /v4
 
     # etcd endpoint URLs
     endpoints:

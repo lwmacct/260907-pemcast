@@ -404,7 +404,7 @@ func mustEncode(t *testing.T, manifest bundle.Manifest) []byte {
 
 func TestPlanSchemaAndPaths(t *testing.T) {
 	_, plan, _ := planFixture(t, "sha256-old", 10)
-	require.Equal(t, "pemcast-publish/v3", PlanSchema)
+	require.Equal(t, "pemcast-publish/v4", PlanSchema)
 	require.Equal(t, "/pemcast", plan.EtcdPrefix)
 	require.Equal(t, PlanSchema, plan.Schema)
 	require.True(t, filepath.IsAbs(plan.CertificatePath))

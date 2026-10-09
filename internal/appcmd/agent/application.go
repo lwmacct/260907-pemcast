@@ -77,7 +77,7 @@ func closeRootLocks(locks []*deploy.RootLock) {
 
 func (a *Application) Run(ctx context.Context) error {
 	if a.config.Once {
-		snapshot, err := a.source.SnapshotTargets(ctx, a.controller.TargetIDs())
+		snapshot, err := a.source.SnapshotActive(ctx)
 		if err != nil {
 			return err
 		}
@@ -92,7 +92,7 @@ func (a *Application) runWatch(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		snapshot, err := a.source.SnapshotTargets(ctx, a.controller.TargetIDs())
+		snapshot, err := a.source.SnapshotActive(ctx)
 		if err != nil {
 			failures++
 			a.logger.ErrorContext(ctx, "read active snapshot failed", "error", err)
@@ -106,7 +106,7 @@ func (a *Application) runWatch(ctx context.Context) error {
 		}
 		failures = 0
 		watchCtx, cancel := context.WithCancel(ctx)
-		events, watchErrors := a.source.WatchTargets(watchCtx, a.controller.TargetIDs(), snapshot.Revision+1)
+		events, watchErrors := a.source.WatchActive(watchCtx, snapshot.Revision+1)
 		var resync <-chan time.Time
 		var timer *time.Timer
 		if a.config.Watch.ResyncInterval > 0 {

@@ -21,34 +21,34 @@ scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
 配置 etcd 访问, 每个消费者一个 target, output root, 安全 mappings, validation pair 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
 
-## etcd prefix 和 target 级用户
+## etcd prefix, 租户和 target 级 bundle 授权
 
-etcd namespace prefix 默认是 `/pemcast`, 可以通过 `agent.etcd.prefix`, `PEMCAST_AGENT_ETCD_PREFIX` 或 CLI `--etcd-prefix` 修改. 程序只硬编码 `/v3/<target-id>/...` 子协议. 以 target `nginx` 为例:
+etcd namespace prefix 默认是 `/pemcast`, 可以通过 `agent.etcd.prefix`, `PEMCAST_AGENT_ETCD_PREFIX` 或 CLI `--etcd-prefix` 修改. 程序只硬编码 `/v4/active|bundles` 子协议. 以 target `nginx` 为例:
 
 ```text
-/pemcast/v3/nginx/active
-/pemcast/v3/nginx/bundles/<generation>
+/pemcast/v4/active/nginx
+/pemcast/v4/bundles/nginx/<generation>
 ```
 
 `etcd-prefix` 可以作为多租户或多环境的 namespace 边界. 例如租户 `example` 使用 `/pemcast/tenants/example`, 租户 `demo` 使用 `/pemcast/tenants/demo`:
 
 ```text
-/pemcast/tenants/example/v3/nginx/active
-/pemcast/tenants/demo/v3/nginx/active
+/pemcast/tenants/example/v4/active/nginx
+/pemcast/tenants/demo/v4/active/nginx
 ```
 
-两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v3` 协议语义.
+两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v4` 协议语义.
 
-每个 target 使用独立 agent/publisher role:
+agent 需要读取整个 active prefix 以执行一次 snapshot 和单个 watch. 证书私钥只按 target 授权:
 
 ```text
-agent:/pemcast/v3:nginx      read        /pemcast/v3/nginx/active
-agent:/pemcast/v3:nginx      read        /pemcast/v3/nginx/bundles/ --prefix
-publisher:/pemcast/v3:nginx  readwrite   /pemcast/v3/nginx/active
-publisher:/pemcast/v3:nginx  readwrite   /pemcast/v3/nginx/bundles/ --prefix
+agent-active:/pemcast/v4     read        /pemcast/v4/active/ --prefix
+agent-bundles:/pemcast/v4:nginx read     /pemcast/v4/bundles/nginx/ --prefix
+publisher:/pemcast/v4:nginx  readwrite   /pemcast/v4/active/nginx
+publisher:/pemcast/v4:nginx  readwrite   /pemcast/v4/bundles/nginx/ --prefix
 ```
 
-agent user 只读远端状态. publisher user 供 `pemcast publish inspect/plan/apply/activate` 使用, 读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. 一个 etcd user 可以挂多个 target role. root 只用于认证和用户管理, 不进入 pemcast 配置.
+agent user 只读远端状态. active prefix 暴露同一租户内全部 target ID 和 generation 元数据, 但私钥 bundle 只对授权 target 开放. publisher user 供 `pemcast publish inspect/plan/apply/activate` 使用, 读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. 一个 etcd user 可以挂 active reader role 和多个 target bundle role. root 只用于认证和用户管理, 不进入 pemcast 配置.
 
 使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent user, publisher user 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
 
@@ -61,7 +61,7 @@ bash .agents/skills/repo-deployment/scripts/init-rbac.sh \
   nginx
 ```
 
-再次执行脚本并传入新的 target, 可以为既有 user 追加 target role. 脚本会验证授权 target 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target 读取被拒绝, 以及未认证读取被拒绝.
+再次执行脚本并传入新的 target, 可以为既有 user 追加 target bundle/publisher role. 脚本会验证授权 active/bundle 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target bundle 读取被拒绝, 以及未认证读取被拒绝.
 
 node agent 配置使用:
 

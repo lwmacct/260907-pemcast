@@ -14,7 +14,7 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
-const PlanSchema = "pemcast-publish/v3"
+const PlanSchema = "pemcast-publish/v4"
 
 const (
 	certificateName = "fullchain.pem"

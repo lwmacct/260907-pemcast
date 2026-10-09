@@ -1,4 +1,4 @@
-// Package bundle defines and validates the immutable pemcast/v3 bundle format.
+// Package bundle defines and validates the immutable pemcast/v4 bundle format.
 package bundle
 
 import (
@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const SchemaV3 = "pemcast/v3"
+const SchemaV4 = "pemcast/v4"
 
 const (
 	KindCertificate = "certificate"
@@ -69,7 +69,7 @@ func NewTLSManifest(certificate, privateKey []byte, certificateName, privateKeyN
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	manifest := Manifest{
-		Schema: SchemaV3,
+		Schema: SchemaV4,
 		Files:  files,
 		Pairs: []Pair{{
 			Certificate: certificateName,
@@ -141,7 +141,7 @@ func ParseManifest(data []byte) (Manifest, error) {
 
 // Validate checks manifest structure and metadata without decoding file data.
 func (m Manifest) Validate() error {
-	if m.Schema != SchemaV3 {
+	if m.Schema != SchemaV4 {
 		return fmt.Errorf("unsupported manifest schema %q", m.Schema)
 	}
 	if len(m.Files) == 0 {
@@ -200,7 +200,7 @@ func (m Manifest) HasPair(certificate, privateKey string) bool {
 // ContentDigest computes the protocol digest over sorted raw file names and raw-content SHA-256 values.
 func ContentDigest(files map[string][]byte) string {
 	hasher := sha256.New()
-	_, _ = hasher.Write([]byte(SchemaV3))
+	_, _ = hasher.Write([]byte(SchemaV4))
 	_, _ = hasher.Write([]byte{0})
 
 	names := make([]string, 0, len(files))
