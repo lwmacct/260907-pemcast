@@ -146,18 +146,16 @@ pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hoo
 
 配置会拒绝重复或祖先/后代重叠的 output root. 同一个 root 的第二个 agent 进程会因文件锁立即失败.
 
-## 租户 prefix 与 target 级 bundle RBAC
+## 租户 prefix 与 RBAC
 
-agent 保持只读. publisher 单独具备写入权限. active prefix 是租户内控制面, bundle 是敏感数据面:
+当前生产使用 broad prefix RBAC. agent 保持只读, publisher 单独具备写入权限:
 
 ```text
-agent-active:<etcd-prefix>/v5 read <etcd-prefix>/v5/active/ prefix
-agent-bundles:<etcd-prefix>/v5:<target-id> read <etcd-prefix>/v5/bundles/<target-id>/ prefix
-publisher:<etcd-prefix>/v5:<target-id> readwrite <etcd-prefix>/v5/active/<target-id>
-publisher:<etcd-prefix>/v5:<target-id> readwrite <etcd-prefix>/v5/bundles/<target-id>/ prefix
+agent read <etcd-prefix>/ prefix
+publish readwrite <etcd-prefix>/ prefix
 ```
 
-一个 etcd user 可以挂一个 active reader role 和多个 target bundle role. 例如 `agent-node-a` 读取租户 active metadata, 但只能读取 `nginx` 和 `api` 的私钥 bundle. 不同租户使用不同 prefix 和不同 etcd users.
+同一 prefix 内的全部 targets 和 bundles 属于同一个信任边界. 这个模式允许新增 target 或协议版本时不需要修改 RBAC. 不同租户使用不同 prefix 和不同 etcd users.
 
 初始化或追加 target 授权:
 
@@ -165,12 +163,13 @@ publisher:<etcd-prefix>/v5:<target-id> readwrite <etcd-prefix>/v5/bundles/<targe
 ETCDCTL_ENDPOINTS='https://etcd.example:2379' \
 bash .agents/skills/repo-deployment/scripts/init-rbac.sh \
   --etcd-prefix /pemcast \
+  --broad \
   --agent-user agent-node-a \
   --publisher-user publisher-ci \
   nginx api.example.com
 ```
 
-脚本会验证授权 active/bundle 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target bundle 读取被拒绝, 以及未认证读取被拒绝.
+脚本会验证授权 active/bundle 可读, publisher 可写 bundle probe, agent 写入被拒绝, 以及未认证读取被拒绝. 如需按 target 隔离私钥 bundle, 可省略 `--broad` 使用 target 级 RBAC; 每新增 target 需要同步追加 role.
 
 ## CI 中直接发布
 

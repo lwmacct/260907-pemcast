@@ -8,7 +8,7 @@ description: "配置和运行 pemcast, 用 pack 加 publish 发布或回滚 cont
 运维任务使用此 skill. 只读取请求需要的 references:
 
 - agent 配置, 启动, container 接线, 失败行为, 回滚或清理: 阅读 [references/operation.md](references/operation.md).
-- 创建 target 级 etcd roles/users 并配置最小权限: 阅读 [references/operation.md](references/operation.md), 确认目标后优先运行 [scripts/init-rbac.sh](scripts/init-rbac.sh).
+- 初始化 broad prefix RBAC, 或在明确需要更强隔离时选择 target 级 RBAC: 阅读 [references/operation.md](references/operation.md), 确认目标后优先运行 [scripts/init-rbac.sh](scripts/init-rbac.sh).
 - 使用 `agent.etcd.prefix` / `--etcd-prefix` 作为租户或环境 namespace: 阅读 [references/operation.md](references/operation.md). 一个 prefix 隔离一组 v5 targets; 不同租户使用不同 prefix 和不同 etcd users.
 - 创建, 发布, 校验或回滚 etcd v5 content-addressed generation: 阅读 [references/publishing.md](references/publishing.md).
 - 需要应急或审计时使用手动 etcdctl helper: 阅读 [references/publishing.md](references/publishing.md), 并运行 [scripts/publish-v5.sh](scripts/publish-v5.sh).

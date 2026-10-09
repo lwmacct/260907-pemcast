@@ -7,7 +7,8 @@ __usage() {
     printf '  --etcd-prefix <prefix>   default: /pemcast\n'
     printf '  --agent-user <user>      default: agent\n'
     printf '  --publisher-user <user>  default: publish\n'
-    printf 'PEMCAST_ETCD_PREFIX, PEMCAST_AGENT_USER, PEMCAST_PUBLISHER_USER and PEMCAST_TARGETS may also be used.\n'
+    printf '  --broad                  grant agent/publish roles the whole namespace prefix\n'
+    printf 'PEMCAST_ETCD_PREFIX, PEMCAST_AGENT_USER, PEMCAST_PUBLISHER_USER, PEMCAST_TARGETS and PEMCAST_RBAC_BROAD may also be used.\n'
 }
 
 __require_environment() {
@@ -128,6 +129,7 @@ __main() {
     _etcd_prefix="${PEMCAST_ETCD_PREFIX:-/pemcast}"
     _agent_user="${PEMCAST_AGENT_USER:-agent}"
     _publisher_user="${PEMCAST_PUBLISHER_USER:-publish}"
+    _broad="${PEMCAST_RBAC_BROAD:-false}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -166,6 +168,10 @@ __main() {
                 fi
                 _publisher_user="$2"
                 shift 2
+                ;;
+            --broad)
+                _broad=true
+                shift
                 ;;
             --*)
                 printf 'unknown option %q\n' "$1" >&2
@@ -209,6 +215,10 @@ __main() {
         __usage >&2
         return 1
     fi
+    if [[ "${_broad}" != true && "${_broad}" != false ]]; then
+        printf 'PEMCAST_RBAC_BROAD must be true or false\n' >&2
+        return 1
+    fi
     for _target in "${_targets[@]}"; do
         if ! __valid_target "$_target"; then
             printf 'unsafe target id %q\n' "$_target" >&2
@@ -248,26 +258,41 @@ __main() {
 
     _active_prefix="${_protocol_root}/active/"
     _bundles_prefix="${_protocol_root}/bundles/"
-    _agent_active_role="agent-active:${_protocol_root}"
-    __ensure_role "$_agent_active_role"
-    __ensure_permission "$_agent_active_role" read "$_active_prefix" prefix
-    __ensure_user_role "$_agent_user" "$_agent_active_role"
+    if [[ "${_broad}" == true ]]; then
+        _namespace_prefix="$(__normalize_prefix "$_etcd_prefix")/"
+        if [[ "${_namespace_prefix}" == '//' ]]; then
+            _namespace_prefix='/'
+        fi
 
-    for _target in "${_targets[@]}"; do
-        _active_key="${_active_prefix}${_target}"
-        _target_bundles_prefix="${_bundles_prefix}${_target}/"
-        _agent_bundle_role="agent-bundles:${_protocol_root}:${_target}"
-        _publisher_role="publisher:${_protocol_root}:${_target}"
+        __ensure_role agent
+        __ensure_permission agent read "${_namespace_prefix}" prefix
+        __ensure_user_role "$_agent_user" agent
 
-        __ensure_role "$_agent_bundle_role"
-        __ensure_permission "$_agent_bundle_role" read "$_target_bundles_prefix" prefix
-        __ensure_user_role "$_agent_user" "$_agent_bundle_role"
+        __ensure_role publish
+        __ensure_permission publish readwrite "${_namespace_prefix}" prefix
+        __ensure_user_role "$_publisher_user" publish
+    else
+        _agent_active_role="agent-active:${_protocol_root}"
+        __ensure_role "$_agent_active_role"
+        __ensure_permission "$_agent_active_role" read "$_active_prefix" prefix
+        __ensure_user_role "$_agent_user" "$_agent_active_role"
 
-        __ensure_role "$_publisher_role"
-        __ensure_permission "$_publisher_role" readwrite "$_active_key"
-        __ensure_permission "$_publisher_role" readwrite "$_target_bundles_prefix" prefix
-        __ensure_user_role "$_publisher_user" "$_publisher_role"
-    done
+        for _target in "${_targets[@]}"; do
+            _active_key="${_active_prefix}${_target}"
+            _target_bundles_prefix="${_bundles_prefix}${_target}/"
+            _agent_bundle_role="agent-bundles:${_protocol_root}:${_target}"
+            _publisher_role="publisher:${_protocol_root}:${_target}"
+
+            __ensure_role "$_agent_bundle_role"
+            __ensure_permission "$_agent_bundle_role" read "$_target_bundles_prefix" prefix
+            __ensure_user_role "$_agent_user" "$_agent_bundle_role"
+
+            __ensure_role "$_publisher_role"
+            __ensure_permission "$_publisher_role" readwrite "$_active_key"
+            __ensure_permission "$_publisher_role" readwrite "$_target_bundles_prefix" prefix
+            __ensure_user_role "$_publisher_user" "$_publisher_role"
+        done
+    fi
 
     for _target in "${_targets[@]}"; do
         ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get \
@@ -280,11 +305,13 @@ __main() {
     ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get "$_probe_key" >/dev/null
     ETCDCTL_USER="${_publisher_user}:$_publisher_password" etcdctl del "$_probe_key" >/dev/null
 
-    _denied_target="rbac-denied-$$"
-    if ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get \
-        "${_bundles_prefix}${_denied_target}/probe" >/dev/null 2>&1; then
-        printf 'agent unexpectedly has access to an unauthorized target bundle\n' >&2
-        return 1
+    if [[ "${_broad}" == false ]]; then
+        _denied_target="rbac-denied-$$"
+        if ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl get \
+            "${_bundles_prefix}${_denied_target}/probe" >/dev/null 2>&1; then
+            printf 'agent unexpectedly has access to an unauthorized target bundle\n' >&2
+            return 1
+        fi
     fi
     if ETCDCTL_USER="${_agent_user}:$_agent_password" etcdctl put "$_probe_key" denied >/dev/null 2>&1; then
         printf 'agent unexpectedly has bundle write permission\n' >&2
@@ -296,8 +323,13 @@ __main() {
         return 1
     fi
 
-    printf 'pemcast v5 RBAC initialized below %s for users %s/%s: %s\n' \
-        "$_protocol_root" "$_agent_user" "$_publisher_user" "${_targets[*]}"
+    if [[ "${_broad}" == true ]]; then
+        printf 'pemcast v5 broad RBAC initialized below %s for users %s/%s: %s\n' \
+            "$_namespace_prefix" "$_agent_user" "$_publisher_user" "${_targets[*]}"
+    else
+        printf 'pemcast v5 target RBAC initialized below %s for users %s/%s: %s\n' \
+            "$_protocol_root" "$_agent_user" "$_publisher_user" "${_targets[*]}"
+    fi
 }
 
 __main "$@"
