@@ -16,4 +16,4 @@ description: "配置和运行 pemcast, 用 pack 加 publish 发布或回滚 cont
 
 v5 immutable bundle 必须先 stage, active pointer value + ModRevision CAS 是唯一 commit point; 孤儿 bundle 是允许的中间状态. 每个 output root 或 target set 只保持一个 agent 进程执行 reconcile. agent 读取 active prefix 和授权 target 的 exact bundle keys.
 
-应用容器必须挂载完整 output root, 不能挂载 `current`, `current` 下的文件或 Kubernetes subPath. 现阶段不向 etcd 回报设备状态.
+应用容器必须通过完整的 target output root 访问证书; 多 target 消费者可以挂载共同的 output parent, 再在应用配置中选择 `<target-id>/current/...`. 不能挂载 `current`, `current` 下的文件或 Kubernetes subPath. 现阶段不向 etcd 回报设备状态.

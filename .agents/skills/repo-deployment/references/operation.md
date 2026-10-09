@@ -99,6 +99,12 @@ pemcast --config /etc/pemcast/config.yaml agent
 
 非 dry-run agent 会自动创建本地目录: `agent.state-dir` 固定为 0700, 每个 target 的 output root 与 `.pemcast` 使用该 target 的 `output.directory-mode`. 部署脚本不需要预创建这些路径. `--once --dry-run` 保持无本地写入, 不会创建 state 或 output path.
 
+## 部署分层
+
+通用 pemcast 部署脚本只负责运行工具容器, 挂载配置, 持久化 agent 数据和提供 hook 所需的控制通道. target id, output root, mapping 和 reload 策略全部由配置文件决定; 不要在通用部署脚本中引用具体 target 或预检某个 target 的证书文件.
+
+消费者部署脚本只表达自己的挂载语义, 例如把 pemcast output namespace 挂载到 `/etc/<consumer>/tls`; 具体使用哪个 target 由消费者配置决定. 首次部署时先启动或同步 agent, 再启动必须立即读取证书的消费者, 或在 agent 完成同步后 reload/restart 消费者.
+
 ## 容器部署拓扑
 
 ### 推荐拓扑: host-level agent
@@ -129,11 +135,14 @@ docker run --rm \
 挂载规则:
 
 - 正确: 挂载 output root, 例如 `/var/lib/pemcast/nginx:/etc/nginx/tls:ro`.
+- 正确: 消费多个 target 时挂载共同 output parent, 应用读取 `/etc/nginx/tls/<target-id>/current/fullchain.pem`.
 - 错误: 挂载 `current`, 例如 `/var/lib/pemcast/nginx/current:/etc/nginx/tls`.
 - 错误: 挂载 `current` 下的单个文件.
 - 错误: Kubernetes subPath 指向 `current`.
 
 原因: 挂载 root 时, 应用每次 open 都会解析 `current` symlink. 直接挂载 `current` 或 subPath 时, container runtime 可能在启动时固定旧 release, pemcast 后续切换 symlink 时应用看不到新证书.
+
+选择容器内路径时使用消费者语义路径, 例如 `/etc/nginx/tls` 或 `/etc/api/tls`; 避免把主机数据目录的长路径原样暴露给应用, 也避免使用无归属的根目录挂载点.
 
 ### 可选拓扑: node agent container
 
@@ -151,7 +160,7 @@ docker run -d \
   pemcast agent --config /etc/pemcast/config.yaml
 ```
 
-这个镜像必须包含 hook 所需的 runtime CLI, 例如 `docker` 或 `podman`. 挂载 Docker socket, Podman socket 或 containerd socket 等价于高权限, 只应用于受信任的 node agent. 如果不接受该权限模型, 请使用 host-level agent 或让应用自身支持证书 reload.
+这个镜像必须能执行 hook 所需的 runtime CLI, 例如 `docker` 或 `podman`; CLI 可以内置在镜像中, 也可以在确认兼容后从受信任 host 只读挂载. 挂载 Docker socket, Podman socket 或 containerd socket 等价于高权限, 只应用于受信任的 node agent. 如果不接受该权限模型, 请使用 host-level agent 或让应用自身支持证书 reload.
 
 ### 受限拓扑: sidecar
 
@@ -183,6 +192,23 @@ docker kill --signal=HUP api
 ```
 
 如果消费者需要不同权限或不同重载策略, 为它们配置不同 target 和不同 output root.
+
+一个消费者需要多个 target 时, 可以只读挂载这些 target 的共同 output parent:
+
+```bash
+docker run \
+  -v /var/lib/pemcast/output:/etc/nginx/tls:ro \
+  nginx:latest
+```
+
+Nginx 在各自的 `server {}` 中选择具体 target:
+
+```nginx
+ssl_certificate     /etc/nginx/tls/example.com/current/fullchain.pem;
+ssl_certificate_key /etc/nginx/tls/example.com/current/privkey.pem;
+```
+
+这种挂载不会固定 `current`; 每次应用 open 仍会经过对应 target root 的 `current` symlink.
 
 ## Hook 示例
 
@@ -221,11 +247,26 @@ exec podman exec gateway nginx -s reload
 exec kill -HUP 1
 ```
 
+简单的一两条命令可以直接使用 shell `path` 加 `args`, 不需要独立脚本文件:
+
+```yaml
+hook:
+  path: /bin/bash
+  args:
+    - -c
+    - |
+      set -eu
+      docker exec gateway nginx -t
+      docker exec gateway nginx -s reload
+```
+
+当 hook 出现分支逻辑, 需要复用, 或需要独立测试时, 再拆成可执行脚本. 无论内联还是脚本, 都必须保持幂等.
+
 所有 hook 都必须幂等. 如果 hook 失败, pemcast 保留已启用的 release, 记录本地 hook error, 并在下一次事件或 resync 时重试 hook. local state 只用于本机 retry 和诊断, 不向 etcd 回报设备状态.
 
 ## Hook 契约
 
-executable 直接执行, 不经过 shell, 并接收:
+hook 的 `path` 直接执行, 不额外经过 shell; 需要 shell 时显式把 `path` 配置为 `/bin/sh` 或 `/bin/bash` 并在 `args` 中传入 `-c` 与脚本. hook 进程接收:
 
 ```text
 PEMCAST_TARGET
