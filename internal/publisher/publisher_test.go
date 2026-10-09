@@ -19,13 +19,38 @@ import (
 
 	"github.com/lwmacct/260907-pemcast/internal/bundle"
 	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
+	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
+
+var testKeys = keyspace.Default()
 
 type fakeKV struct {
 	values                 map[string]etcdsource.Value
 	revision               int64
 	failAtomic             bool
 	changeActiveBeforeSwap bool
+	keys                   keyspace.Keys
+}
+
+func (kv *fakeKV) ensureKeys() {
+	if kv.keys.Prefix() == "" {
+		kv.keys = keyspace.Default()
+	}
+}
+
+func (kv *fakeKV) Prefix() string {
+	kv.ensureKeys()
+	return kv.keys.Prefix()
+}
+
+func (kv *fakeKV) ActiveKey(targetID string) string {
+	kv.ensureKeys()
+	return kv.keys.ActiveKey(targetID)
+}
+
+func (kv *fakeKV) BundleKey(targetID, generation string) string {
+	kv.ensureKeys()
+	return kv.keys.BundleKey(targetID, generation)
 }
 
 func (kv *fakeKV) Get(_ context.Context, key string) (etcdsource.Value, error) {
@@ -111,7 +136,7 @@ func planFixture(t *testing.T, activeGeneration string, activeRevision int64) (P
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	kv := &fakeKV{values: make(map[string]etcdsource.Value), revision: activeRevision}
 	if activeGeneration != "" {
-		kv.values[etcdsource.ActiveKey("nginx")] = etcdsource.Value{
+		kv.values[testKeys.ActiveKey("nginx")] = etcdsource.Value{
 			Data: activeGeneration, ModRevision: activeRevision, Exists: true,
 		}
 	}
@@ -139,14 +164,15 @@ func TestCreatePlanCapturesMissingActivePointer(t *testing.T) {
 
 func TestInspectReportsActivePointer(t *testing.T) {
 	kv := &fakeKV{values: map[string]etcdsource.Value{
-		etcdsource.ActiveKey("nginx"): {Data: "sha256-current", ModRevision: 42, Exists: true},
+		testKeys.ActiveKey("nginx"): {Data: "sha256-current", ModRevision: 42, Exists: true},
 	}}
 
 	state, err := Inspect(t.Context(), kv, "nginx")
 	require.NoError(t, err)
 	require.Equal(t, ActiveState{
-		TargetID: "nginx",
-		Active:   Active{Exists: true, Generation: "sha256-current", ModRevision: 42},
+		EtcdPrefix: "/pemcast",
+		TargetID:   "nginx",
+		Active:     Active{Exists: true, Generation: "sha256-current", ModRevision: 42},
 	}, state)
 }
 
@@ -162,7 +188,7 @@ func TestInspectReportsMissingPointer(t *testing.T) {
 
 func TestInspectRejectsUnsafePointer(t *testing.T) {
 	kv := &fakeKV{values: map[string]etcdsource.Value{
-		etcdsource.ActiveKey("nginx"): {Data: "../unsafe", ModRevision: 42, Exists: true},
+		testKeys.ActiveKey("nginx"): {Data: "../unsafe", ModRevision: 42, Exists: true},
 	}}
 
 	_, err := Inspect(t.Context(), kv, "nginx")
@@ -172,7 +198,7 @@ func TestInspectRejectsUnsafePointer(t *testing.T) {
 func TestCreatePlanCapturesExistingActivePointer(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	kv := &fakeKV{values: map[string]etcdsource.Value{
-		etcdsource.ActiveKey("nginx"): {Data: "sha256-current", ModRevision: 10, Exists: true},
+		testKeys.ActiveKey("nginx"): {Data: "sha256-current", ModRevision: 10, Exists: true},
 	}}
 	plan, err := CreatePlan(t.Context(), kv, PlanOptions{
 		TargetID: "nginx", CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
@@ -183,10 +209,31 @@ func TestCreatePlanCapturesExistingActivePointer(t *testing.T) {
 	require.Equal(t, int64(10), plan.ExpectedActiveModRevision)
 }
 
+func TestCreatePlanUsesConfiguredEtcdPrefix(t *testing.T) {
+	certificatePath, privateKeyPath := writeKeyPair(t)
+	customKeys, err := keyspace.NewKeys("/tenants/example")
+	require.NoError(t, err)
+	kv := &fakeKV{
+		values: make(map[string]etcdsource.Value),
+		keys:   customKeys,
+	}
+	kv.values[customKeys.ActiveKey("nginx")] = etcdsource.Value{
+		Data: "sha256-current", ModRevision: 10, Exists: true,
+	}
+
+	plan, err := CreatePlan(t.Context(), kv, PlanOptions{
+		TargetID: "nginx", CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "/tenants/example", plan.EtcdPrefix)
+	require.True(t, plan.ExpectedActiveExists)
+	require.Equal(t, "sha256-current", plan.ExpectedActiveGeneration)
+}
+
 func TestCreatePlanRejectsUnsafeActivePointer(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	kv := &fakeKV{values: map[string]etcdsource.Value{
-		etcdsource.ActiveKey("nginx"): {Data: "../unsafe", ModRevision: 10, Exists: true},
+		testKeys.ActiveKey("nginx"): {Data: "../unsafe", ModRevision: 10, Exists: true},
 	}}
 	_, err := CreatePlan(t.Context(), kv, PlanOptions{
 		TargetID: "nginx", CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
@@ -198,10 +245,10 @@ func TestApplyAtomicallyCreatesBundleAndPointer(t *testing.T) {
 	_, plan, kv := planFixture(t, "", 0)
 	require.NoError(t, Apply(t.Context(), kv, plan))
 
-	active := kv.values[etcdsource.ActiveKey("nginx")]
+	active := kv.values[testKeys.ActiveKey("nginx")]
 	require.True(t, active.Exists)
 	require.Equal(t, plan.Generation, active.Data)
-	remote := kv.values[etcdsource.BundleKey("nginx", plan.Generation)]
+	remote := kv.values[testKeys.BundleKey("nginx", plan.Generation)]
 	require.True(t, remote.Exists)
 	_, files, digest, err := bundle.Decode([]byte(remote.Data))
 	require.NoError(t, err)
@@ -221,7 +268,7 @@ func TestApplyIsIdempotentAfterReplanningSameGeneration(t *testing.T) {
 	require.NoError(t, Apply(t.Context(), kv, plan))
 	require.Equal(
 		t,
-		kv.values[etcdsource.ActiveKey("nginx")].ModRevision,
+		kv.values[testKeys.ActiveKey("nginx")].ModRevision,
 		plan.ExpectedActiveModRevision,
 	)
 }
@@ -231,18 +278,26 @@ func TestApplyRejectsLocalMaterialChangedAfterPlan(t *testing.T) {
 	require.NoError(t, os.WriteFile(plan.CertificatePath, []byte("changed"), 0o600))
 
 	require.ErrorContains(t, Apply(t.Context(), kv, plan), "changed after publish plan")
-	require.Empty(t, kv.values[etcdsource.ActiveKey("nginx")])
-	require.Empty(t, kv.values[etcdsource.BundleKey("nginx", plan.Generation)])
+	require.Empty(t, kv.values[testKeys.ActiveKey("nginx")])
+	require.Empty(t, kv.values[testKeys.BundleKey("nginx", plan.Generation)])
 }
 
 func TestApplyRejectsActiveModRevisionChange(t *testing.T) {
 	_, plan, kv := planFixture(t, "sha256-old", 10)
-	kv.values[etcdsource.ActiveKey("nginx")] = etcdsource.Value{
+	kv.values[testKeys.ActiveKey("nginx")] = etcdsource.Value{
 		Data: "sha256-old", ModRevision: 11, Exists: true,
 	}
 	require.ErrorContains(t, Apply(t.Context(), kv, plan), "remote state changed")
-	require.Empty(t, kv.values[etcdsource.BundleKey("nginx", plan.Generation)])
-	require.Equal(t, int64(11), kv.values[etcdsource.ActiveKey("nginx")].ModRevision)
+	require.Empty(t, kv.values[testKeys.BundleKey("nginx", plan.Generation)])
+	require.Equal(t, int64(11), kv.values[testKeys.ActiveKey("nginx")].ModRevision)
+}
+
+func TestApplyRejectsPlanFromDifferentEtcdPrefix(t *testing.T) {
+	_, plan, kv := planFixture(t, "sha256-old", 10)
+	plan.EtcdPrefix = "/other"
+
+	err := Apply(t.Context(), kv, plan)
+	require.ErrorContains(t, err, "does not match configured prefix")
 }
 
 func TestApplyAtomicFailureWritesNeitherKey(t *testing.T) {
@@ -250,8 +305,8 @@ func TestApplyAtomicFailureWritesNeitherKey(t *testing.T) {
 	kv.failAtomic = true
 	err := Apply(t.Context(), kv, plan)
 	require.ErrorContains(t, err, "transaction failed")
-	require.Empty(t, kv.values[etcdsource.ActiveKey("nginx")])
-	require.Empty(t, kv.values[etcdsource.BundleKey("nginx", plan.Generation)])
+	require.Empty(t, kv.values[testKeys.ActiveKey("nginx")])
+	require.Empty(t, kv.values[testKeys.BundleKey("nginx", plan.Generation)])
 }
 
 func TestApplyUsesExistingIdenticalBundleWithoutRewriting(t *testing.T) {
@@ -260,40 +315,40 @@ func TestApplyUsesExistingIdenticalBundleWithoutRewriting(t *testing.T) {
 		mustRead(t, plan.CertificatePath), mustRead(t, plan.PrivateKeyPath), "fullchain.pem", "privkey.pem",
 	)
 	encoded := string(mustEncode(t, manifest))
-	kv.values[etcdsource.BundleKey("nginx", plan.Generation)] = etcdsource.Value{
+	kv.values[testKeys.BundleKey("nginx", plan.Generation)] = etcdsource.Value{
 		Data: encoded, ModRevision: 9, Exists: true,
 	}
 
 	require.NoError(t, Apply(t.Context(), kv, plan))
-	require.Equal(t, encoded, kv.values[etcdsource.BundleKey("nginx", plan.Generation)].Data)
-	require.Equal(t, plan.Generation, kv.values[etcdsource.ActiveKey("nginx")].Data)
+	require.Equal(t, encoded, kv.values[testKeys.BundleKey("nginx", plan.Generation)].Data)
+	require.Equal(t, plan.Generation, kv.values[testKeys.ActiveKey("nginx")].Data)
 }
 
 func TestApplyRejectsExistingGenerationWithDifferentContent(t *testing.T) {
 	_, plan, kv := planFixture(t, "sha256-old", 10)
-	kv.values[etcdsource.BundleKey("nginx", plan.Generation)] = etcdsource.Value{
+	kv.values[testKeys.BundleKey("nginx", plan.Generation)] = etcdsource.Value{
 		Data: "different", ModRevision: 9, Exists: true,
 	}
 	err := Apply(t.Context(), kv, plan)
 	require.ErrorContains(t, err, "contains different data")
-	require.Equal(t, "sha256-old", kv.values[etcdsource.ActiveKey("nginx")].Data)
+	require.Equal(t, "sha256-old", kv.values[testKeys.ActiveKey("nginx")].Data)
 }
 
 func TestActivateVerifiesRemoteBundleAndUsesModRevisionCAS(t *testing.T) {
 	_, initialPlan, kv := planFixture(t, "", 0)
 	require.NoError(t, Apply(t.Context(), kv, initialPlan))
-	current := kv.values[etcdsource.ActiveKey("nginx")]
+	current := kv.values[testKeys.ActiveKey("nginx")]
 	require.NoError(t, Activate(t.Context(), kv, ActivateOptions{
 		TargetID: "nginx", Generation: initialPlan.Generation,
 	}))
-	require.Equal(t, current.ModRevision, kv.values[etcdsource.ActiveKey("nginx")].ModRevision)
+	require.Equal(t, current.ModRevision, kv.values[testKeys.ActiveKey("nginx")].ModRevision)
 
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	manifest, digest := bundle.NewTLSManifest(
 		mustRead(t, certificatePath), mustRead(t, privateKeyPath), "fullchain.pem", "privkey.pem",
 	)
 	otherGeneration := bundle.Generation(digest)
-	kv.values[etcdsource.BundleKey("nginx", otherGeneration)] = etcdsource.Value{
+	kv.values[testKeys.BundleKey("nginx", otherGeneration)] = etcdsource.Value{
 		Data: string(mustEncode(t, manifest)), ModRevision: 2, Exists: true,
 	}
 
@@ -306,7 +361,7 @@ func TestActivateVerifiesRemoteBundleAndUsesModRevisionCAS(t *testing.T) {
 
 func TestActivateRejectsMissingGeneration(t *testing.T) {
 	kv := &fakeKV{values: map[string]etcdsource.Value{
-		etcdsource.ActiveKey("nginx"): {Data: "sha256-old", ModRevision: 10, Exists: true},
+		testKeys.ActiveKey("nginx"): {Data: "sha256-old", ModRevision: 10, Exists: true},
 	}}
 	err := Activate(t.Context(), kv, ActivateOptions{
 		TargetID: "nginx", Generation: "sha256-missing",
@@ -321,7 +376,7 @@ func TestActivateRejectsRemoteKeyPairMismatch(t *testing.T) {
 	manifest, digest := bundle.NewTLSManifest(certificate, certificate, "fullchain.pem", "privkey.pem")
 	encoded := string(mustEncode(t, manifest))
 	generation := bundle.Generation(digest)
-	kv.values[etcdsource.BundleKey("nginx", generation)] = etcdsource.Value{
+	kv.values[testKeys.BundleKey("nginx", generation)] = etcdsource.Value{
 		Data: encoded, ModRevision: 1, Exists: true,
 	}
 
@@ -349,7 +404,8 @@ func mustEncode(t *testing.T, manifest bundle.Manifest) []byte {
 
 func TestPlanSchemaAndPaths(t *testing.T) {
 	_, plan, _ := planFixture(t, "sha256-old", 10)
-	require.Equal(t, "pemcast-publish/v2", PlanSchema)
+	require.Equal(t, "pemcast-publish/v3", PlanSchema)
+	require.Equal(t, "/pemcast", plan.EtcdPrefix)
 	require.Equal(t, PlanSchema, plan.Schema)
 	require.True(t, filepath.IsAbs(plan.CertificatePath))
 	require.True(t, filepath.IsAbs(plan.PrivateKeyPath))

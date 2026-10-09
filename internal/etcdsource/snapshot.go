@@ -3,7 +3,6 @@ package etcdsource
 import (
 	"context"
 	"fmt"
-	"path"
 	"strings"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -11,29 +10,61 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/bundle"
 )
 
-// Snapshot is a linearizable view of all active pointers at one etcd revision.
+// Snapshot is a linearizable view of the configured active pointers at one etcd revision.
 type Snapshot struct {
 	Revision int64
 	Active   map[string]string
 }
 
-// SnapshotActive retrieves every active pointer and the revision from which a lossless watch can continue.
-func (c *Client) SnapshotActive(ctx context.Context) (Snapshot, error) {
+// SnapshotTargets retrieves only the configured active pointers in one etcd
+// transaction and returns the revision from which a lossless watch can continue.
+func (c *Client) SnapshotTargets(ctx context.Context, targetIDs []string) (Snapshot, error) {
+	targets, err := c.targetIDSet(targetIDs)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	requestCtx, cancel := c.requestContext(ctx)
 	defer cancel()
-	prefix := c.activePrefix()
-	response, err := c.client.Get(requestCtx, prefix, clientv3.WithPrefix())
+
+	operations := make([]clientv3.Op, 0, len(targetIDs))
+	for _, targetID := range targetIDs {
+		operations = append(operations, clientv3.OpGet(c.ActiveKey(targetID)))
+	}
+	response, err := c.client.Txn(requestCtx).Then(operations...).Commit()
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read etcd active pointers: %w", err)
 	}
-	active := make(map[string]string, len(response.Kvs))
-	for _, kv := range response.Kvs {
-		id := strings.TrimPrefix(string(kv.Key), prefix)
+	return snapshotFromTxnResponse(response, targets)
+}
+
+func snapshotFromTxnResponse(
+	response *clientv3.TxnResponse, targets map[string]string,
+) (Snapshot, error) {
+	if len(response.Responses) != len(targets) {
+		return Snapshot{}, fmt.Errorf(
+			"exact active-pointer transaction returned %d responses, want %d",
+			len(response.Responses), len(targets),
+		)
+	}
+	active := make(map[string]string, len(targets))
+	for _, operation := range response.Responses {
+		kvs := operation.GetResponseRange().Kvs
+		if len(kvs) > 1 {
+			return Snapshot{}, fmt.Errorf("exact active-pointer read returned %d keys", len(kvs))
+		}
+		if len(kvs) == 0 {
+			continue
+		}
+		kv := kvs[0]
+		targetID, ok := targets[string(kv.Key)]
+		if !ok {
+			return Snapshot{}, fmt.Errorf("exact active-pointer read returned unexpected key %q", kv.Key)
+		}
 		generation := strings.TrimSpace(string(kv.Value))
-		if !bundle.SafeName(id) || !bundle.SafeName(generation) {
+		if !bundle.SafeName(targetID) || !bundle.SafeName(generation) {
 			return Snapshot{}, fmt.Errorf("invalid active pointer %q=%q", kv.Key, kv.Value)
 		}
-		active[id] = generation
+		active[targetID] = generation
 	}
 	return Snapshot{Revision: response.Header.Revision, Active: active}, nil
 }
@@ -45,7 +76,7 @@ func (c *Client) FetchBundle(ctx context.Context, targetID, generation string, r
 	}
 	requestCtx, cancel := c.requestContext(ctx)
 	defer cancel()
-	key := c.bundleKey(targetID, generation)
+	key := c.BundleKey(targetID, generation)
 	options := []clientv3.OpOption{}
 	if revision > 0 {
 		options = append(options, clientv3.WithRev(revision))
@@ -78,19 +109,20 @@ func materialFromValue(targetID, generation string, value []byte, revision int64
 	}, nil
 }
 
-func (c *Client) activePrefix() string { return ActivePrefix() }
-
-func (c *Client) bundleKey(targetID, generation string) string {
-	return BundleKey(targetID, generation)
-}
-
-// ActivePrefix returns the fixed prefix watched for target pointers.
-func ActivePrefix() string { return ProtocolRoot + "/active/" }
-
-// ActiveKey returns one target's active pointer key.
-func ActiveKey(targetID string) string { return path.Join(ProtocolRoot, "active", targetID) }
-
-// BundleKey returns one immutable single-key bundle path.
-func BundleKey(targetID, generation string) string {
-	return path.Join(ProtocolRoot, "bundles", targetID, generation)
+func (c *Client) targetIDSet(targetIDs []string) (map[string]string, error) {
+	if len(targetIDs) == 0 {
+		return nil, fmt.Errorf("at least one target ID is required")
+	}
+	targets := make(map[string]string, len(targetIDs))
+	for _, targetID := range targetIDs {
+		if !bundle.SafeName(targetID) {
+			return nil, fmt.Errorf("unsafe target id %q", targetID)
+		}
+		key := c.ActiveKey(targetID)
+		if _, exists := targets[key]; exists {
+			return nil, fmt.Errorf("target id %q is duplicated", targetID)
+		}
+		targets[key] = targetID
+	}
+	return targets, nil
 }

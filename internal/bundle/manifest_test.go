@@ -60,7 +60,7 @@ func TestDecodeRejectsInvalidBase64(t *testing.T) {
 }
 
 func TestParseManifestRejectsTraversalAndUnknownFields(t *testing.T) {
-	_, err := ParseManifest([]byte(`{"schema":"pemcast/v2","extra":true}`))
+	_, err := ParseManifest([]byte(`{"schema":"pemcast/v3","extra":true}`))
 	require.Error(t, err)
 
 	manifest, _ := testManifest(t)

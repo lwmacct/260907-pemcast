@@ -1,4 +1,4 @@
-// Package etcdsource reads immutable pemcast bundles and active pointers from etcd.
+// Package etcdsource reads immutable pemcast v3 bundles and target active pointers from etcd.
 package etcdsource
 
 import (
@@ -11,19 +11,28 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/lwmacct/260907-pemcast/internal/config"
+	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
-// ProtocolRoot is the fixed, non-configurable pemcast/v2 namespace.
-const ProtocolRoot = "/pemcast/v2"
+// ProtocolRoot is the fixed target-first protocol root below the configured etcd prefix.
+const ProtocolRoot = keyspace.ProtocolRoot
+
+// DefaultPrefix is the default configurable etcd namespace prefix.
+const DefaultPrefix = keyspace.DefaultPrefix
 
 // Client wraps the official etcd v3 client with pemcast protocol paths.
 type Client struct {
 	client         *clientv3.Client
 	requestTimeout time.Duration
+	keys           keyspace.Keys
 }
 
 // New creates an etcd client. It does not require the cluster to be reachable yet.
 func New(cfg config.Etcd) (*Client, error) {
+	keys, err := keyspace.NewKeys(cfg.Prefix)
+	if err != nil {
+		return nil, err
+	}
 	tlsConfig, err := buildTLSConfig(cfg.TLS)
 	if err != nil {
 		return nil, err
@@ -38,11 +47,31 @@ func New(cfg config.Etcd) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create etcd client: %w", err)
 	}
-	return newClient(client, cfg.RequestTimeout), nil
+	return &Client{client: client, requestTimeout: cfg.RequestTimeout, keys: keys}, nil
 }
 
 func newClient(client *clientv3.Client, requestTimeout time.Duration) *Client {
-	return &Client{client: client, requestTimeout: requestTimeout}
+	return &Client{
+		client:         client,
+		requestTimeout: requestTimeout,
+		keys:           keyspace.Default(),
+	}
+}
+
+// Prefix returns the normalized configured etcd namespace prefix.
+func (c *Client) Prefix() string { return c.keys.Prefix() }
+
+// ActiveKey returns one target's active pointer key.
+func (c *Client) ActiveKey(targetID string) string { return c.keys.ActiveKey(targetID) }
+
+// BundleKey returns one immutable bundle path.
+func (c *Client) BundleKey(targetID, generation string) string {
+	return c.keys.BundleKey(targetID, generation)
+}
+
+// TargetPrefix returns one target's RBAC isolation boundary.
+func (c *Client) TargetPrefix(targetID string) string {
+	return c.keys.TargetPrefix(targetID)
 }
 
 func buildTLSConfig(cfg config.EtcdTLS) (*tls.Config, error) {

@@ -1,10 +1,10 @@
-# 发布 pemcast v2 bundle
+# 发布 pemcast v3 bundle
 
-协议固定使用 `/pemcast/v2`:
+etcd namespace prefix 默认 `/pemcast`, 可通过 `agent.etcd.prefix` 或 `--etcd-prefix` 配置. 固定子协议是 `/v3/<target-id>/...`:
 
 ```text
-/pemcast/v2/active/nginx = sha256-<bundle-digest>
-/pemcast/v2/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
+/pemcast/v3/nginx/active = sha256-<bundle-digest>
+/pemcast/v3/nginx/bundles/sha256-<bundle-digest> = complete JSON bundle
 ```
 
 generation 由 bundle 内容计算, 操作者不手工命名. 单 key JSON 将证书和私钥 base64 内联, 完整 encoded value 最大 1 MiB.
@@ -27,6 +27,7 @@ flowchart TD
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml publish plan \
+  --etcd-prefix /pemcast \
   --target nginx \
   --certificate fullchain.pem \
   --private-key privkey.pem \
@@ -37,6 +38,7 @@ pemcast --config /etc/pemcast/config.yaml publish plan \
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml publish apply \
+  --etcd-prefix /pemcast \
   --plan release-plan.json
 ```
 
@@ -50,7 +52,7 @@ pemcast --config /etc/pemcast/config.yaml publish apply \
 4. 推导 `sha256-<digest>` generation.
 5. 自动捕获 active pointer 的 absent/existing 状态.
 6. 记录 active generation 和 ModRevision.
-7. 输出本地文件路径和 digest, 不输出私钥内容.
+7. 记录 etcd prefix, 本地文件路径和 digest, 不输出私钥内容.
 
 `publish apply` 会重新读取本地文件. 如果证书, 私钥或 digest 在 plan 后变化, 直接失败. 新 bundle 走一个 etcd transaction:
 
@@ -63,7 +65,7 @@ Then Put complete bundle
      Put active pointer
 ```
 
-任一条件失败时, bundle 和 pointer 都不会提交. 如果同 digest bundle 已存在, 只允许完全相同的内容, 然后单独用 active value + ModRevision CAS 切换 pointer.
+任一条件失败时, bundle 和 pointer 都不会提交. 如果同 digest bundle 已存在, 只允许完全相同的内容, 然后单独用 active value + ModRevision CAS 切换 pointer. plan 记录的 etcd prefix 与 `publish apply --etcd-prefix` 不一致时, apply 直接拒绝.
 
 ## 回滚
 
@@ -71,6 +73,7 @@ Then Put complete bundle
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml publish activate \
+  --etcd-prefix /pemcast \
   --target nginx \
   --generation sha256-old
 ```
@@ -92,6 +95,6 @@ pemcast --config /etc/pemcast/config.yaml status --json
 
 - 不修改已暴露的 generation.
 - 不手工指定或复用 generation 名.
-- 不用 etcdctl 常规写入 v2 数据.
+- 不用 etcdctl 常规写入 v3 数据.
 - plan 文件权限应为 0600, 因为它暴露证书路径和 digest 元数据.
 - 远端历史 bundle 清理由独立运维策略负责, 必须永远保留 active generation.

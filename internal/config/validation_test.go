@@ -53,6 +53,14 @@ func TestValidateRejectsOverlappingOutputRoots(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
+func TestValidateCommonRejectsUnsafeEtcdPrefix(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Etcd.Prefix = "../unsafe"
+
+	err := cfg.Agent.ValidateCommon()
+	require.ErrorContains(t, err, "etcd prefix")
+}
+
 func validTarget(id, root string) Target {
 	return Target{
 		ID: id, DeletePolicy: "retain",

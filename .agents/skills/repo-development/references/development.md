@@ -24,13 +24,13 @@ go test ./internal/config
 
 默认运行配置不携带 target; `ExampleConfig()` 专门为 `config example` 提供 nginx 示例. 修改时保持这两者分离.
 
-环境变量值使用完整 schema path, 例如 `PEMCAST_AGENT_ETCD_ENDPOINTS`. struct, slice 和 map 是 JSON; scalar 和 duration 是字符串.
+环境变量值使用完整 schema path, 例如 `PEMCAST_AGENT_ETCD_ENDPOINTS` 和 `PEMCAST_AGENT_ETCD_PREFIX`. struct, slice 和 map 是 JSON; scalar 和 duration 是字符串.
 
 ## 修改地图
 
 - CLI/生命周期: 检查 `cmd/pemcast`, `internal/appcmd/agent`, `internal/appcmd/publish` 和 `internal/appcmd/status`. 保持 signal cancellation, once/watch 行为和 output root 锁生命周期.
 - 配置: 修改 `internal/config/config.go` 与 `validation.go`, 并覆盖 path 安全, mode, duration, target 唯一性, output root 重叠, mapping 引用和 hook 环境变量名.
-- 远端协议: 保持固定 `/pemcast/v2` root, exact-key fetch, 1 MiB 单 key bundle 限制, 严格 JSON, kind/encoding 校验, generation/digest 匹配, 以及从 `snapshot + 1` 开始 watch. snapshot/watch 仍需真实 etcd 集成测试.
+- 远端协议: 保持可配置 etcd prefix, 固定 `/v3/<target-id>/...` target-first layout, configured target exact-key snapshot/watch/fetch, 1 MiB 单 key bundle 限制, 严格 JSON, kind/encoding 校验, generation/digest 匹配, 以及从同一个 `snapshot + 1` revision 开始 watch. snapshot/watch 仍需真实 etcd 集成测试.
 - bundle 校验: 保持 digest 逻辑独立于 etcd 和 deployment. 测试 manifest 拒绝, digest 顺序和稳定性, base64 解码, 文件 hash, key mismatch, kind mismatch, encoding mismatch, size limit 和 validity 边界.
 - reconcile: 覆盖 changed/unchanged digest, dry-run, hook retry, state 更新, concurrency, snapshot 缺失 target 和两种 delete policy. 保持 consumer-side 接口便于 fake 注入.
 - deployment: 保持排序 flock, staging, fsync, rename, content-addressed release, release 完整性校验, 原子 relative symlink 切换和 active-release 保留.

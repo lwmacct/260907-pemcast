@@ -7,6 +7,7 @@ require (
 	github.com/lwmacct/251207-go-pkg-version v0.4.260630
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.14.0
+	go.etcd.io/etcd/api/v3 v3.7.2
 	go.etcd.io/etcd/client/v3 v3.7.2
 )
 
@@ -15,7 +16,6 @@ require (
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect
-	go.etcd.io/etcd/api/v3 v3.7.2 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.7.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect

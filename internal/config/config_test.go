@@ -28,6 +28,21 @@ func TestDefaultConfigHasNoTargets(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigUsesDefaultEtcdPrefix(t *testing.T) {
+	if got := DefaultConfig().Agent.Etcd.Prefix; got != DefaultEtcdPrefix {
+		t.Fatalf("default etcd prefix = %q, want %q", got, DefaultEtcdPrefix)
+	}
+}
+
+func TestValidateCommonAcceptsCustomEtcdPrefix(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Etcd.Prefix = "/tenants/example"
+
+	if err := cfg.Agent.ValidateCommon(); err != nil {
+		t.Fatalf("ValidateCommon() error = %v", err)
+	}
+}
+
 func TestExampleConfigHasRepresentativeTarget(t *testing.T) {
 	got := ExampleConfig().Agent.Targets
 	if len(got) != 1 || got[0].ID != "nginx" {

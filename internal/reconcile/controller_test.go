@@ -224,7 +224,7 @@ func testMaterial(t *testing.T, digest string) *bundle.Material {
 		Generation: "generation-1",
 		Revision:   42,
 		Manifest: bundle.Manifest{
-			Schema: bundle.SchemaV2,
+			Schema: bundle.SchemaV3,
 			Files: []bundle.ManifestFile{
 				{Name: "cert.pem", Kind: "certificate", SHA256: digest},
 				{Name: "key.pem", Kind: "private-key", SHA256: digest},

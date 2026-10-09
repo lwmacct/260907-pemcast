@@ -1,6 +1,6 @@
 ---
 name: repo-development
-description: "修改, 调试或测试 pemcast 的 Go 实现, 同时保持 v2 单 key 协议, 原子发布, 校验, 原子启用和生成配置规则. 不用于纯部署操作."
+description: "修改, 调试或测试 pemcast 的 Go 实现, 同时保持 v3 单 key 协议, 原子发布, 校验, 原子启用和生成配置规则. 不用于纯部署操作."
 ---
 
 # pemcast 开发

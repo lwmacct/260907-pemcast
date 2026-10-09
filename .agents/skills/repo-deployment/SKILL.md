@@ -8,10 +8,11 @@ description: "配置和运行 pemcast, 用 publish plan/apply/activate 发布或
 运维任务使用此 skill. 只读取请求需要的 references:
 
 - agent 配置, 启动, container 接线, 失败行为, 回滚或清理: 阅读 [references/operation.md](references/operation.md).
-- 创建 `agent` 和 `publish` 两组 etcd 用户/角色并配置最小权限: 阅读 [references/operation.md](references/operation.md), 确认目标后优先运行 [scripts/init-rbac.sh](scripts/init-rbac.sh).
-- 创建, 发布, 校验或回滚 etcd v2 content-addressed generation: 阅读 [references/publishing.md](references/publishing.md).
+- 创建 target 级 etcd roles/users 并配置最小权限: 阅读 [references/operation.md](references/operation.md), 确认目标后优先运行 [scripts/init-rbac.sh](scripts/init-rbac.sh).
+- 使用 `agent.etcd.prefix` / `--etcd-prefix` 作为租户或环境 namespace: 阅读 [references/operation.md](references/operation.md). 一个 prefix 隔离一组 v3 targets; 不同租户使用不同 prefix 和不同 etcd users.
+- 创建, 发布, 校验或回滚 etcd v3 content-addressed generation: 阅读 [references/publishing.md](references/publishing.md).
 - 涉及生产部署或 etcd mutation 时, 先确认确切目标环境和请求的变更. 优先使用 `agent --once --dry-run` 作为非写入验证步骤.
 
-v2 新 bundle 与 active pointer 必须在同一个 etcd transaction 中提交. 每个 output root 或 target set 只保持一个 agent 进程执行 reconcile.
+v3 新 bundle 与 active pointer 必须在同一个 etcd transaction 中提交. 每个 output root 或 target set 只保持一个 agent 进程执行 reconcile. agent 只读取配置 target 的 exact keys.
 
 应用容器必须挂载完整 output root, 不能挂载 `current`, `current` 下的文件或 Kubernetes subPath. 现阶段不向 etcd 回报设备状态.

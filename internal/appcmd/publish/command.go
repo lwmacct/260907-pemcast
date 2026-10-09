@@ -26,6 +26,7 @@ var inspectCommand = &cli.Command{
 	Usage: "inspect the remote active pointer without changing it",
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "target", Usage: "target ID", Required: true},
+		etcdPrefixFlag(),
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
 		cfg, err := loadConfig(ctx, command)
@@ -59,6 +60,7 @@ var planCommand = &cli.Command{
 		&cli.StringFlag{Name: "certificate", Usage: "path to fullchain.pem", Required: true},
 		&cli.StringFlag{Name: "private-key", Usage: "path to privkey.pem", Required: true},
 		&cli.StringFlag{Name: "output", Usage: "write the plan to this file instead of standard output"},
+		etcdPrefixFlag(),
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
 		cfg, err := loadConfig(ctx, command)
@@ -97,6 +99,7 @@ var applyCommand = &cli.Command{
 	Usage: "apply a publish plan with an etcd atomic transaction",
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "plan", Usage: "path created by pemcast publish plan", Required: true},
+		etcdPrefixFlag(),
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
 		cfg, err := loadConfig(ctx, command)
@@ -130,6 +133,7 @@ var activateCommand = &cli.Command{
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "target", Usage: "target ID", Required: true},
 		&cli.StringFlag{Name: "generation", Usage: "existing content-addressed generation", Required: true},
+		etcdPrefixFlag(),
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
 		cfg, err := loadConfig(ctx, command)
@@ -155,6 +159,14 @@ var activateCommand = &cli.Command{
 	},
 }
 
+func etcdPrefixFlag() cli.Flag {
+	return &cli.StringFlag{
+		Name:  "etcd-prefix",
+		Usage: "etcd namespace prefix placed before /v3",
+		Value: config.DefaultEtcdPrefix,
+	}
+}
+
 func loadConfig(ctx context.Context, command *cli.Command) (*config.Config, error) {
 	sources := make([]cfgm.Source, 0, 2)
 	if path := strings.TrimSpace(command.Root().String("config")); path != "" {
@@ -173,6 +185,12 @@ func loadConfig(ctx context.Context, command *cli.Command) (*config.Config, erro
 	}
 	if err := cfg.Agent.ValidateCommon(); err != nil {
 		return nil, err
+	}
+	if command.IsSet("etcd-prefix") {
+		cfg.Agent.Etcd.Prefix = command.String("etcd-prefix")
+		if err := cfg.Agent.ValidateCommon(); err != nil {
+			return nil, err
+		}
 	}
 	return cfg, nil
 }

@@ -8,9 +8,14 @@ import (
 	"time"
 
 	"github.com/lwmacct/251207-go-pkg-cfgm/pkg/cfgm"
+
+	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
 const AppName = "pemcast"
+
+// DefaultEtcdPrefix is the default namespace placed before the fixed v3 protocol root.
+const DefaultEtcdPrefix = "/pemcast"
 
 // Config is grouped by CLI subcommand so cfgm can trim command prefixes.
 type Config struct {
@@ -30,6 +35,7 @@ type Agent struct {
 
 // Etcd configures access to the remote etcd cluster.
 type Etcd struct {
+	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v3"`
 	Endpoints      []string      `json:"endpoints"       desc:"etcd endpoint URLs"`
 	Username       string        `json:"username"        desc:"etcd username"`
 	Password       string        `json:"password"        desc:"etcd password"`
@@ -103,6 +109,7 @@ func DefaultConfig() Config {
 		StateDir:      "/var/lib/pemcast",
 		MaxConcurrent: 4,
 		Etcd: Etcd{
+			Prefix:         DefaultEtcdPrefix,
 			Endpoints:      []string{"http://127.0.0.1:2379"},
 			DialTimeout:    5 * time.Second,
 			RequestTimeout: 10 * time.Second,
@@ -166,6 +173,9 @@ func (a Agent) ValidateCommon() error {
 	}
 	if len(a.Etcd.Endpoints) == 0 {
 		return fmt.Errorf("agent.etcd.endpoints is required")
+	}
+	if _, err := keyspace.NewKeys(a.Etcd.Prefix); err != nil {
+		return err
 	}
 	for index, endpoint := range a.Etcd.Endpoints {
 		if strings.TrimSpace(endpoint) == "" {
@@ -233,5 +243,6 @@ var Manager = cfgm.MustNew(
 	DefaultConfig(),
 	cfgm.AppName(AppName),
 	cfgm.CLIAlias("agent.etcd.endpoints", "E"),
+	cfgm.CLIAlias("agent.etcd.prefix", "etcd-prefix"),
 	cfgm.HideCLI("agent.etcd.password"),
 )

@@ -11,6 +11,7 @@ pemcast --config /etc/pemcast/config.yaml config validate
 
 ```text
 PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd-1:2379"]'
+PEMCAST_AGENT_ETCD_PREFIX=/pemcast
 PEMCAST_AGENT_ONCE=true
 PEMCAST_AGENT_WATCH_RESYNC_INTERVAL=10m
 PEMCAST_AGENT_TARGETS='[{"id":"nginx",...}]'
@@ -20,25 +21,47 @@ scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
 配置 etcd 访问, 每个消费者一个 target, output root, 安全 mappings, validation pair 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
 
-## etcd agent 和 publish 用户
+## etcd prefix 和 target 级用户
 
-当 etcd 只服务 pemcast 时, 使用两组同名的用户和角色:
+etcd namespace prefix 默认是 `/pemcast`, 可以通过 `agent.etcd.prefix`, `PEMCAST_AGENT_ETCD_PREFIX` 或 CLI `--etcd-prefix` 修改. 程序只硬编码 `/v3/<target-id>/...` 子协议. 以 target `nginx` 为例:
 
 ```text
-agent   -> read /pemcast/ --prefix
-publish -> readwrite /pemcast/ --prefix
+/pemcast/v3/nginx/active
+/pemcast/v3/nginx/bundles/<generation>
 ```
 
-`agent` 供 node agent 长期使用, 只读远端状态. `publish` 供 `pemcast publish inspect/plan/apply/activate` 使用, 需要读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. root 只用于认证和用户管理, 不进入 pemcast 配置.
+`etcd-prefix` 可以作为多租户或多环境的 namespace 边界. 例如租户 `example` 使用 `/pemcast/tenants/example`, 租户 `demo` 使用 `/pemcast/tenants/demo`:
 
-使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent, publish 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
+```text
+/pemcast/tenants/example/v3/nginx/active
+/pemcast/tenants/demo/v3/nginx/active
+```
+
+两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v3` 协议语义.
+
+每个 target 使用独立 agent/publisher role:
+
+```text
+agent:/pemcast/v3:nginx      read        /pemcast/v3/nginx/active
+agent:/pemcast/v3:nginx      read        /pemcast/v3/nginx/bundles/ --prefix
+publisher:/pemcast/v3:nginx  readwrite   /pemcast/v3/nginx/active
+publisher:/pemcast/v3:nginx  readwrite   /pemcast/v3/nginx/bundles/ --prefix
+```
+
+agent user 只读远端状态. publisher user 供 `pemcast publish inspect/plan/apply/activate` 使用, 读取 active pointer 和 bundle, 写入新 bundle, 并 CAS 切换 pointer. 一个 etcd user 可以挂多个 target role. root 只用于认证和用户管理, 不进入 pemcast 配置.
+
+使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent user, publisher user 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
 
 ```bash
 ETCDCTL_ENDPOINTS='https://etcd.example:2379' \
-bash .agents/skills/repo-deployment/scripts/init-rbac.sh
+bash .agents/skills/repo-deployment/scripts/init-rbac.sh \
+  --etcd-prefix /pemcast \
+  --agent-user agent-node-a \
+  --publisher-user publisher-ci \
+  nginx
 ```
 
-脚本会创建缺失的用户和角色, 补齐授权, 验证 agent 只读, publish 可读, 以及未认证读取被拒绝. 这个简化授权允许同一凭据读取所有 pemcast target 的证书 bundle. 它适用于专用 etcd; 如果未来 etcd 服务其他系统, 或不同节点必须只能读取部分 target, 再改为按 target 收窄权限.
+再次执行脚本并传入新的 target, 可以为既有 user 追加 target role. 脚本会验证授权 target 可读, publisher 可写 bundle probe, agent 写入被拒绝, 未授权 target 读取被拒绝, 以及未认证读取被拒绝.
 
 node agent 配置使用:
 
@@ -49,6 +72,7 @@ agent:
       - https://etcd.example:2379
     username: agent
     password: "<agent-password>"
+    prefix: /pemcast
 ```
 
 发布端配置使用:
@@ -60,6 +84,7 @@ agent:
       - https://etcd.example:2379
     username: publish
     password: "<publish-password>"
+    prefix: /pemcast
 ```
 
 使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcd.tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcd.tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.

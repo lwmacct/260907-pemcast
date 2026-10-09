@@ -11,9 +11,10 @@ import (
 
 	"github.com/lwmacct/260907-pemcast/internal/bundle"
 	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
+	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
-const PlanSchema = "pemcast-publish/v2"
+const PlanSchema = "pemcast-publish/v3"
 
 const (
 	certificateName = "fullchain.pem"
@@ -21,6 +22,9 @@ const (
 )
 
 type KV interface {
+	Prefix() string
+	ActiveKey(targetID string) string
+	BundleKey(targetID, generation string) string
 	Get(ctx context.Context, key string) (etcdsource.Value, error)
 	CreateBundleAndSwapActive(
 		ctx context.Context,
@@ -37,8 +41,9 @@ type PlanOptions struct {
 }
 
 type ActiveState struct {
-	TargetID string `json:"target-id"`
-	Active   Active `json:"active"`
+	EtcdPrefix string `json:"etcd-prefix"`
+	TargetID   string `json:"target-id"`
+	Active     Active `json:"active"`
 }
 
 type Active struct {
@@ -49,6 +54,7 @@ type Active struct {
 
 type Plan struct {
 	Schema                    string `json:"schema"`
+	EtcdPrefix                string `json:"etcd-prefix"`
 	TargetID                  string `json:"target-id"`
 	Generation                string `json:"generation"`
 	BundleSHA256              string `json:"bundle-sha256"`
@@ -65,7 +71,7 @@ func Inspect(ctx context.Context, kv KV, targetID string) (ActiveState, error) {
 	if err := validateTarget(targetID); err != nil {
 		return ActiveState{}, err
 	}
-	value, err := kv.Get(ctx, etcdsource.ActiveKey(targetID))
+	value, err := kv.Get(ctx, kv.ActiveKey(targetID))
 	if err != nil {
 		return ActiveState{}, fmt.Errorf("read active pointer: %w", err)
 	}
@@ -73,7 +79,8 @@ func Inspect(ctx context.Context, kv KV, targetID string) (ActiveState, error) {
 		return ActiveState{}, fmt.Errorf("active pointer %q is unsafe", value.Data)
 	}
 	return ActiveState{
-		TargetID: targetID,
+		EtcdPrefix: kv.Prefix(),
+		TargetID:   targetID,
 		Active: Active{
 			Exists:      value.Exists,
 			Generation:  value.Data,
@@ -114,6 +121,7 @@ func CreatePlan(ctx context.Context, kv KV, options PlanOptions) (Plan, error) {
 
 	return Plan{
 		Schema:                    PlanSchema,
+		EtcdPrefix:                kv.Prefix(),
 		TargetID:                  options.TargetID,
 		Generation:                bundle.Generation(material.digest),
 		BundleSHA256:              material.digest,
@@ -138,6 +146,9 @@ func DecodePlan(data []byte) (Plan, error) {
 	if err := validateTarget(plan.TargetID); err != nil {
 		return Plan{}, err
 	}
+	if _, err := keyspace.NewKeys(plan.EtcdPrefix); err != nil {
+		return Plan{}, err
+	}
 	if err := validateActiveCondition(plan.ExpectedActiveGeneration, plan.ExpectedActiveModRevision, plan.ExpectedActiveExists); err != nil {
 		return Plan{}, err
 	}
@@ -153,6 +164,16 @@ func Apply(ctx context.Context, kv KV, plan Plan) error {
 	}
 	if err := validateActiveCondition(plan.ExpectedActiveGeneration, plan.ExpectedActiveModRevision, plan.ExpectedActiveExists); err != nil {
 		return err
+	}
+	planKeys, err := keyspace.NewKeys(plan.EtcdPrefix)
+	if err != nil {
+		return err
+	}
+	if planKeys.Prefix() != kv.Prefix() {
+		return fmt.Errorf(
+			"publish plan etcd prefix %q does not match configured prefix %q",
+			plan.EtcdPrefix, kv.Prefix(),
+		)
 	}
 	material, _, _, err := readMaterial(plan.CertificatePath, plan.PrivateKeyPath)
 	if err != nil {
@@ -171,8 +192,8 @@ func Apply(ctx context.Context, kv KV, plan Plan) error {
 		return err
 	}
 
-	bundleKey := etcdsource.BundleKey(plan.TargetID, plan.Generation)
-	activeKey := etcdsource.ActiveKey(plan.TargetID)
+	bundleKey := kv.BundleKey(plan.TargetID, plan.Generation)
+	activeKey := kv.ActiveKey(plan.TargetID)
 	existing, err := kv.Get(ctx, bundleKey)
 	if err != nil {
 		return fmt.Errorf("read existing bundle: %w", err)
@@ -219,7 +240,7 @@ func Activate(ctx context.Context, kv KV, options ActivateOptions) error {
 	if err != nil {
 		return err
 	}
-	bundleKey := etcdsource.BundleKey(options.TargetID, options.Generation)
+	bundleKey := kv.BundleKey(options.TargetID, options.Generation)
 	value, err := kv.Get(ctx, bundleKey)
 	if err != nil {
 		return fmt.Errorf("read existing bundle: %w", err)
@@ -245,7 +266,7 @@ func Activate(ctx context.Context, kv KV, options ActivateOptions) error {
 		return nil
 	}
 
-	updated, err := kv.SwapActive(ctx, etcdsource.ActiveKey(options.TargetID), options.Generation, expected)
+	updated, err := kv.SwapActive(ctx, kv.ActiveKey(options.TargetID), options.Generation, expected)
 	if err != nil {
 		return err
 	}
@@ -256,7 +277,7 @@ func Activate(ctx context.Context, kv KV, options ActivateOptions) error {
 }
 
 func captureActive(ctx context.Context, kv KV, targetID string) (etcdsource.ActiveCondition, error) {
-	value, err := kv.Get(ctx, etcdsource.ActiveKey(targetID))
+	value, err := kv.Get(ctx, kv.ActiveKey(targetID))
 	if err != nil {
 		return etcdsource.ActiveCondition{}, fmt.Errorf("read active pointer: %w", err)
 	}
