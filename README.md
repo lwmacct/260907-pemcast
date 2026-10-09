@@ -80,7 +80,7 @@ PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
 pemcast publish --pack-dir /secure/tmp/nginx-pack
 ```
 
-publish 读取 pack 后独立重算 encoded hash, 文件 hash, whole digest, generation 和 TLS pair. 如果 bundle key 已存在, 必须与本地 `bundle.json` bytes 完全相同. 然后捕获 active pointer, 首次发布用 `create(active) = 0` CAS, 更新用 active value + ModRevision CAS. active 已经等于目标 generation 时直接 no-op. etcd transaction 成功即表示本次发布已提交； 若随后被另一个合法发布覆盖, 本次结果仍是 published.
+publish 读取 pack 后独立重算 encoded hash, 文件 hash, whole digest, generation 和 TLS pair. 如果 bundle key 已存在, 必须与本地 `bundle.json` bytes 完全相同. 然后捕获 active pointer, 首次发布用 `create(active) = 0` CAS, 更新用 active value + ModRevision CAS. active 已经等于目标 generation 时直接 no-op. etcd transaction 成功即表示本次发布已提交; 若随后被另一个合法发布覆盖, 本次结果仍是 published.
 
 bundle stage 可能留下未被引用的孤儿 bundle; 这不产生消费者事件, 也不会改变本地证书. 只有 pointer CAS 成功才是发布 commit point.
 
@@ -282,8 +282,11 @@ pemcast version
 
 ```bash
 go test ./...
+go vet ./...
+go test -race ./...
 go run ./cmd/pemcast --help
 go run ./cmd/pemcast --config config/config.yaml config validate
+bash scripts/integration-etcd.sh
 ```
 
-`config/config.example.yaml` 由 `internal/config` 测试生成. 修改配置 schema 后运行 `go test ./internal/config`, 并提交更新后的示例文件.
+GitHub CI 会在 push 和 pull request 上运行 test, vet, race 和真实 etcd 3.7.2 集成测试. `config/config.example.yaml` 由 `internal/config` 测试生成. 修改配置 schema 后运行 `go test ./internal/config`, 并提交更新后的示例文件.

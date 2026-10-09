@@ -47,6 +47,8 @@ pemcast pack \
 
 输出目录必须不存在. `bundle.json` 与 `stage.txn` 包含私钥, 权限为 0600; 整个 pack 目录应保存在受限存储中并在使用后清理.
 
+`pemcast pack` 会在写盘前完整校验 pack. `stage.txn` 缺失时可由 bundle 与 bundle key 重建; 非空但与 bundle 不一致时拒绝写入.
+
 ## 推荐 publish
 
 `pemcast publish` 复用 `agent.etcd` 的 endpoints, TLS, timeout 和 prefix 配置; user 由命令特定环境模板解析:

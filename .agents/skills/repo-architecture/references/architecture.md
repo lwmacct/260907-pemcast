@@ -120,6 +120,8 @@ agent 会拒绝 pointer generation 与 bundle digest 不一致的数据.
 
 v5 允许存在未被 active pointer 引用的孤儿 bundle. 这是设计结果, 不是失败: bundle 是 object database, active pointer 是 ref. 消费者只 watch active prefix, 因此 bundle stage 本身没有发布语义. 唯一 commit point 是 pointer CAS 成功.
 
+etcd CAS transaction 的 success response 是 publish 的权威提交判定. CAS 成功后, 另一个合法发布可能立即覆盖 active pointer; 这不会使先前的成功发布变成失败.
+
 发布失败或并发冲突时可能留下已 stage 的 bundle, 可以保留给后续重试或由外部策略清理. active generation 对应的 bundle 必须永远保留.
 
 ## Reconcile
@@ -189,5 +191,6 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/state`: activation/hook state.
 - `internal/status`: 只读本地 target 状态.
 - `.agents/skills/repo-deployment/scripts/publish-v5.sh`: 手动 etcdctl staged publication fallback.
+- `scripts/integration-etcd.sh`: 真实 etcd 3.7.2 auth/RBAC/publish/agent 集成测试.
 
-已知边界: snapshot/watch 与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.
+已知边界: watch 模式与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.
