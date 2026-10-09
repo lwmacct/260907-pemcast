@@ -2,12 +2,14 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lwmacct/251207-go-pkg-cfgm/pkg/cfgm"
+	"github.com/urfave/cli/v3"
 
 	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
@@ -37,8 +39,7 @@ type Agent struct {
 type Etcd struct {
 	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v5"`
 	Endpoints      []string      `json:"endpoints"       desc:"etcd endpoint URLs"`
-	Username       string        `json:"username"        desc:"etcd username"`
-	Password       string        `json:"password"        desc:"etcd password"`
+	User           string        `json:"-"`
 	DialTimeout    time.Duration `json:"dial-timeout"    desc:"etcd connection timeout"`
 	RequestTimeout time.Duration `json:"request-timeout" desc:"timeout for an etcd read"`
 	TLS            EtcdTLS       `json:"tls"             desc:"etcd TLS client configuration"`
@@ -182,6 +183,9 @@ func (a Agent) ValidateCommon() error {
 			return fmt.Errorf("agent.etcd.endpoints[%d] is empty", index)
 		}
 	}
+	if _, _, err := SplitEtcdUser(a.Etcd.User); err != nil {
+		return err
+	}
 	if a.Etcd.DialTimeout <= 0 || a.Etcd.RequestTimeout <= 0 {
 		return fmt.Errorf("agent.etcd dial-timeout and request-timeout must be positive")
 	}
@@ -198,6 +202,19 @@ func (a Agent) ValidateCommon() error {
 		return fmt.Errorf("agent.max-concurrent must be positive")
 	}
 	return nil
+}
+
+// SplitEtcdUser splits the etcdctl-style `username:password` value at the
+// first colon. Everything after that colon belongs to the password.
+func SplitEtcdUser(value string) (string, string, error) {
+	if value == "" {
+		return "", "", nil
+	}
+	username, password, found := strings.Cut(value, ":")
+	if !found || username == "" || password == "" {
+		return "", "", fmt.Errorf("etcd user must be empty or formatted as username:password")
+	}
+	return username, password, nil
 }
 
 // ValidateTargets checks the deployment-specific local target set.
@@ -244,5 +261,75 @@ var Manager = cfgm.MustNew(
 	cfgm.AppName(AppName),
 	cfgm.CLIAlias("agent.etcd.endpoints", "E"),
 	cfgm.CLIAlias("agent.etcd.prefix", "etcd-prefix"),
-	cfgm.HideCLI("agent.etcd.password"),
 )
+
+// AgentEtcdUserTemplate is expanded by a dedicated cfgm manager.
+const AgentEtcdUserTemplate = `${ETCDCTL_USER_AGENT:-${ETCDCTL_USER:-}}`
+
+// PublishEtcdUserTemplate is the publish-specific credential fallback.
+const PublishEtcdUserTemplate = `${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}`
+
+// LoadEtcdCommand loads configuration for commands that need etcd access.
+// The template source is last so ETCDCTL_USER* credentials are authoritative.
+func LoadEtcdCommand(ctx context.Context, root *cli.Command, etcdUserTemplate string) (*Config, error) {
+	sources := make([]cfgm.Source, 0, 2)
+	if root != nil {
+		if path := strings.TrimSpace(root.String("config")); path != "" {
+			sources = append(sources, cfgm.File(path))
+		}
+	}
+	prefix := "PEMCAST_"
+	if root != nil && root.IsSet("env-prefix") {
+		prefix = root.String("env-prefix")
+	}
+	if prefix != "" {
+		sources = append(sources, cfgm.Env(prefix))
+	}
+	cfg, err := Manager.Load(ctx, sources...)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Agent.Etcd.User, err = ExpandEtcdUser(ctx, etcdUserTemplate)
+	return cfg, err
+}
+
+// ActionWithEtcdUserTemplate wraps Manager.Action while retaining its defaults,
+// files, environment, and CLI source behavior. Credentials are expanded from a
+// separate command-specific cfgm template and are authoritative.
+func ActionWithEtcdUserTemplate(
+	run func(context.Context, *cli.Command, *Config) error,
+	etcdUserTemplate string,
+) func(context.Context, *cli.Command) error {
+	action := Manager.Action(func(ctx context.Context, command *cli.Command, cfg *Config) error {
+		user, err := ExpandEtcdUser(ctx, etcdUserTemplate)
+		if err != nil {
+			return fmt.Errorf("expand etcd user template: %w", err)
+		}
+		cfg.Agent.Etcd.User = user
+		return run(ctx, command, cfg)
+	})
+	return func(ctx context.Context, command *cli.Command) error {
+		return action(ctx, command)
+	}
+}
+
+type etcdUserConfig struct {
+	User string `json:"user"`
+}
+
+// ExpandEtcdUser uses cfgm template expansion to resolve command-specific
+// ETCDCTL_USER fallbacks. An empty result disables etcd authentication.
+func ExpandEtcdUser(ctx context.Context, templateValue string) (string, error) {
+	manager, err := cfgm.New(
+		etcdUserConfig{User: templateValue},
+		cfgm.WithoutDefaultPaths(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create etcd user config manager: %w", err)
+	}
+	credentials, err := manager.Load(ctx)
+	if err != nil {
+		return "", fmt.Errorf("expand etcd user template: %w", err)
+	}
+	return credentials.User, nil
+}

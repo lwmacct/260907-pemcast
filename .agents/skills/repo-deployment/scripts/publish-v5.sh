@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Manual pemcast v5 publisher for operators who intentionally use etcdctl.
+# The supported product path is `pemcast pack` followed by `pemcast publish`.
+
 set -euo pipefail
 
 _ETCDCTL="${ETCDCTL:-etcdctl}"

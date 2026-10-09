@@ -107,6 +107,99 @@ func Build(options Options) (Result, error) {
 	}, nil
 }
 
+// Read loads and strictly validates a pack directory. The stage transaction is
+// intentionally optional because it is only used by the manual etcdctl path.
+func Read(directory string) (Result, error) {
+	if strings.TrimSpace(directory) == "" {
+		return Result{}, fmt.Errorf("pack directory is empty")
+	}
+	metadataData, err := os.ReadFile(filepath.Join(directory, "metadata.json"))
+	if err != nil {
+		return Result{}, fmt.Errorf("read pack metadata: %w", err)
+	}
+	var metadata Metadata
+	if err := json.Unmarshal(metadataData, &metadata, json.RejectUnknownMembers(true)); err != nil {
+		return Result{}, fmt.Errorf("decode pack metadata: %w", err)
+	}
+	bundleData, err := os.ReadFile(filepath.Join(directory, "bundle.json"))
+	if err != nil {
+		return Result{}, fmt.Errorf("read pack bundle: %w", err)
+	}
+	result := Result{Metadata: metadata, Bundle: bundleData}
+	if err := Validate(result); err != nil {
+		return Result{}, err
+	}
+	return result, nil
+}
+
+// Validate independently derives and checks every pack field used by publish.
+func Validate(result Result) error {
+	metadata := result.Metadata
+	if metadata.Schema != MetadataSchema {
+		return fmt.Errorf("unsupported pack metadata schema %q", metadata.Schema)
+	}
+	keys, err := keyspace.NewKeys(metadata.EtcdPrefix)
+	if err != nil {
+		return err
+	}
+	if !bundle.SafeName(metadata.TargetID) {
+		return fmt.Errorf("pack target id %q is unsafe", metadata.TargetID)
+	}
+	if metadata.BundleValueSHA256 != hash(result.Bundle) {
+		return fmt.Errorf("pack bundle bytes do not match bundle-value-sha256")
+	}
+	if metadata.EncodedSize != len(result.Bundle) {
+		return fmt.Errorf(
+			"pack encoded size is %d but bundle contains %d bytes",
+			metadata.EncodedSize, len(result.Bundle),
+		)
+	}
+
+	manifest, files, digest, err := bundle.Decode(result.Bundle)
+	if err != nil {
+		return fmt.Errorf("decode pack bundle: %w", err)
+	}
+	if digest != metadata.BundleSHA256 {
+		return fmt.Errorf("pack bundle digest does not match bundle-sha256")
+	}
+	if err := bundle.ValidateGeneration(metadata.Generation, digest); err != nil {
+		return fmt.Errorf("pack generation is invalid: %w", err)
+	}
+	if expectedActiveKey := keys.ActiveKey(metadata.TargetID); metadata.ActiveKey != expectedActiveKey {
+		return fmt.Errorf("pack active key %q does not match expected %q", metadata.ActiveKey, expectedActiveKey)
+	}
+	expectedBundleKey := keys.BundleKey(metadata.TargetID, metadata.Generation)
+	if metadata.BundleKey != expectedBundleKey {
+		return fmt.Errorf("pack bundle key %q does not match expected %q", metadata.BundleKey, expectedBundleKey)
+	}
+	if len(files) != 2 || len(manifest.Files) != 2 || len(manifest.Pairs) != 1 || len(metadata.Files) != 2 {
+		return fmt.Errorf("pack must contain exactly one certificate/private-key pair")
+	}
+	if _, ok := files[certificateName]; !ok {
+		return fmt.Errorf("pack is missing %q", certificateName)
+	}
+	if _, ok := files[privateKeyName]; !ok {
+		return fmt.Errorf("pack is missing %q", privateKeyName)
+	}
+	pair := manifest.Pairs[0]
+	if pair.Certificate != certificateName || pair.PrivateKey != privateKeyName {
+		return fmt.Errorf("pack certificate pair must reference %q and %q", certificateName, privateKeyName)
+	}
+	for _, file := range manifest.Files {
+		expected, ok := metadata.Files[file.Name]
+		if !ok {
+			return fmt.Errorf("pack metadata is missing file %q", file.Name)
+		}
+		if expected.Kind != file.Kind || expected.SHA256 != file.SHA256 {
+			return fmt.Errorf("pack metadata does not match bundle file %q", file.Name)
+		}
+	}
+	if _, err := bundle.ValidateKeyPair(files[certificateName], files[privateKeyName]); err != nil {
+		return fmt.Errorf("pack TLS pair is invalid: %w", err)
+	}
+	return nil
+}
+
 // Write creates a new output directory containing the bundle, metadata, and
 // etcdctl stage transaction. It refuses to replace an existing directory.
 func Write(outputDir string, result Result) error {

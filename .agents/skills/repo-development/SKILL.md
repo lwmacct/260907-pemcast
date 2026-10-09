@@ -5,6 +5,6 @@ description: "修改, 调试或测试 pemcast 的 Go 实现, 同时保持 v5 单
 
 # pemcast 开发
 
-代码和测试修改使用此 skill. 先阅读 [references/development.md](references/development.md), 再检查其中列出的相关包后动手. v5 不保留 publisher CLI 或旧协议兼容.
+代码和测试修改使用此 skill. 先阅读 [references/development.md](references/development.md), 再检查其中列出的相关包后动手. v5 只保留单一 `publish --pack-dir`, 不恢复 v4 plan/apply/activate 或旧协议兼容.
 
 Go 修改的最低验证是 `go test ./...`. 配置 schema 修改还必须通过现有 config test 重新生成并提交 `config/config.example.yaml`.

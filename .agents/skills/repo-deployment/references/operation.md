@@ -48,7 +48,7 @@ publisher:/pemcast/v5:nginx  readwrite   /pemcast/v5/active/nginx
 publisher:/pemcast/v5:nginx  readwrite   /pemcast/v5/bundles/nginx/ --prefix
 ```
 
-agent user 只读远端状态. active prefix 暴露同一租户内全部 target ID 和 generation 元数据, 但私钥 bundle 只对授权 target 开放. publisher user 供 etcdctl staged publication helper 使用, 读取 active pointer 和 bundle, stage 新 bundle, 并 CAS 切换 pointer. 一个 etcd user 可以挂 active reader role 和多个 target bundle role. root 只用于认证和用户管理, 不进入 pemcast 配置.
+agent user 只读远端状态. active prefix 暴露同一租户内全部 target ID 和 generation 元数据, 但私钥 bundle 只对授权 target 开放. publisher user 供 `pemcast publish` 使用, 读取 active pointer 和 bundle, stage 新 bundle, 并 CAS 切换 pointer. 一个 etcd user 可以挂 active reader role 和多个 target bundle role. root 只用于认证和用户管理, 不进入 pemcast 配置.
 
 使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent user, publisher user 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
 
@@ -70,12 +70,10 @@ agent:
   etcd:
     endpoints:
       - https://etcd.example:2379
-    username: agent
-    password: "<agent-password>"
     prefix: /pemcast
 ```
 
-发布端不加载 pemcast agent 配置. `pemcast pack` 使用 `--etcd-prefix`, `publish-v5.sh` 复用 etcdctl 标准环境变量 `ETCDCTL_ENDPOINTS`, `ETCDCTL_USER` 和 `ETCDCTL_*` TLS 变量.
+发布端复用 `agent.etcd` 配置. `pemcast pack` 使用 `--etcd-prefix`, `pemcast publish` 使用 `agent.etcd.prefix` 与同一组 etcd endpoint 和 TLS 配置. etcd 认证统一为 `username:password`; agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
 
 使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcd.tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcd.tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
 
@@ -250,6 +248,6 @@ cat /var/lib/pemcast/nginx.json | jq .
 - deploy: output 权限, release 完整性或文件系统失败;
 - hook timeout/nonzero: executable, authorization 或下游服务失败.
 
-回滚使用旧 pack 目录重新执行 `publish-v5.sh`, 把 active pointer CAS 回完整的旧 content-addressed generation. 需要时 pemcast 会重建已被 prune 的本地 release. 删除 pointer 永远不会删除本地文件: `retain` 继续提供服务, `fail` 报告删除.
+回滚使用旧 pack 目录重新执行 `pemcast publish`, 把 active pointer CAS 回完整的旧 content-addressed generation. 需要时 pemcast 会重建已被 prune 的本地 release. 删除 pointer 永远不会删除本地文件: `retain` 继续提供服务, `fail` 报告删除.
 
 手工恢复前先停止持有 `agent.lock` 的 agent, 修复完整 release 和 symlink, 再重启并对目标 generation 执行 dry-run. 正常运行期间不要编辑 `.pemcast` 内部结构.

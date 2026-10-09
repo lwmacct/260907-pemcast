@@ -43,6 +43,63 @@ func TestValidateCommonAcceptsCustomEtcdPrefix(t *testing.T) {
 	}
 }
 
+func TestSplitEtcdUserUsesFirstColon(t *testing.T) {
+	username, password, err := SplitEtcdUser("agent:secret:with:colons")
+	if err != nil {
+		t.Fatalf("SplitEtcdUser() error = %v", err)
+	}
+	if username != "agent" || password != "secret:with:colons" {
+		t.Fatalf("SplitEtcdUser() = %q, %q", username, password)
+	}
+
+	if _, _, err := SplitEtcdUser(""); err != nil {
+		t.Fatalf("empty user must disable authentication, got %v", err)
+	}
+	for _, value := range []string{"agent", ":secret", "agent:", ":", "agent:secret"} {
+		if value == "agent:secret" {
+			continue
+		}
+		if _, _, err := SplitEtcdUser(value); err == nil {
+			t.Fatalf("SplitEtcdUser(%q) unexpectedly succeeded", value)
+		}
+	}
+}
+
+func TestEtcdUserTemplateFallback(t *testing.T) {
+	t.Setenv("ETCDCTL_USER", "fallback:fallback-secret")
+	t.Setenv("ETCDCTL_USER_PUBLISH", "publish:publish-secret")
+
+	user, err := ExpandEtcdUser(t.Context(), PublishEtcdUserTemplate)
+	if err != nil {
+		t.Fatalf("load environment credentials: %v", err)
+	}
+	if got := user; got != "publish:publish-secret" {
+		t.Fatalf("specific etcd user alias = %q", got)
+	}
+
+	if err := os.Unsetenv("ETCDCTL_USER_PUBLISH"); err != nil {
+		t.Fatalf("unset specific alias: %v", err)
+	}
+	user, err = ExpandEtcdUser(t.Context(), PublishEtcdUserTemplate)
+	if err != nil {
+		t.Fatalf("load alias credentials: %v", err)
+	}
+	if got := user; got != "fallback:fallback-secret" {
+		t.Fatalf("generic etcd user fallback = %q", got)
+	}
+
+	if err := os.Unsetenv("ETCDCTL_USER"); err != nil {
+		t.Fatalf("unset fallback alias: %v", err)
+	}
+	user, err = ExpandEtcdUser(t.Context(), PublishEtcdUserTemplate)
+	if err != nil {
+		t.Fatalf("load without aliases: %v", err)
+	}
+	if got := user; got != "" {
+		t.Fatalf("empty credential fallback = %q, want empty", got)
+	}
+}
+
 func TestExampleConfigHasRepresentativeTarget(t *testing.T) {
 	got := ExampleConfig().Agent.Targets
 	if len(got) != 1 || got[0].ID != "nginx" {

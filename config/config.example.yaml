@@ -15,8 +15,6 @@ agent:
     # etcd endpoint URLs
     endpoints:
       - http://127.0.0.1:2379
-    username: "" # etcd username
-    password: "" # etcd password
     dial-timeout: 5s # etcd connection timeout
     request-timeout: 10s # timeout for an etcd read
 

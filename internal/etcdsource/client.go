@@ -37,10 +37,14 @@ func New(cfg config.Etcd) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	username, password, err := config.SplitEtcdUser(cfg.User)
+	if err != nil {
+		return nil, err
+	}
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   append([]string(nil), cfg.Endpoints...),
-		Username:    cfg.Username,
-		Password:    cfg.Password,
+		Username:    username,
+		Password:    password,
 		DialTimeout: cfg.DialTimeout,
 		TLS:         tlsConfig,
 	})

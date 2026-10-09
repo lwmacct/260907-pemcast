@@ -2,9 +2,9 @@
 
 ## 定位
 
-pemcast 是一个 pull-only certificate agent. `pemcast pack` 在本地校验证书并生成 immutable v5 bundle 与 etcdctl transaction 输入; 运维方先用 etcdctl stage bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. agent 只监听 active pointer, 按事件 revision exact-key 读取 bundle, 校验后在本地物化 immutable release 并切换稳定 symlink. 服务重载交给可信 hook.
+pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast pack` 在本地校验证书并生成 immutable v5 bundle 与 metadata; `pemcast publish` 先 stage bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. agent 只监听 active pointer, 按事件 revision exact-key 读取 bundle, 校验后在本地物化 immutable release 并切换稳定 symlink. 服务重载交给可信 hook.
 
-仓库不包含 etcd lease manager, service-control integration 或 HTTP API. 远端发布由 `scripts/publish-v5.sh` 驱动 etcdctl, 不存在 `publish` 子命令.
+仓库不包含 etcd lease manager, service-control integration 或 HTTP API. etcdctl helper 位于 repo-deployment skill, 仅作为手动 fallback; 产品发布路径是单一 `pemcast publish --pack-dir`, 不存在 v4 plan/apply/activate 状态机.
 
 ## 运行流程
 
@@ -25,7 +25,7 @@ watch 模式中单个 reconcile 失败只记录日志, 不停止进程.
 sequenceDiagram
     autonumber
     participant P as pemcast pack
-    participant O as operator/etcdctl
+    participant P2 as pemcast publish
     participant E as etcd
     participant A as agent
     participant C as controller
@@ -33,9 +33,9 @@ sequenceDiagram
     participant H as hook
     participant S as state
 
-    P->>O: bundle.json + metadata.json + stage.txn
-    O->>E: create bundle if absent
-    O->>E: active value + ModRevision CAS
+    P->>P2: bundle.json + metadata.json
+    P2->>E: create bundle if absent
+    P2->>E: active value + ModRevision CAS
     E-->>A: pointer event
     A->>C: reconcile target
     C->>E: exact-key get bundle at event revision
@@ -114,7 +114,9 @@ agent 会拒绝 pointer generation 与 bundle digest 不一致的数据.
 发布分两步:
 
 1. Stage immutable bundle. bundle key 不存在则创建; 已存在则要求 encoded bytes 完全相同. 任何差异都是数据损坏并必须失败.
-2. Capture active pointer 的 generation 和 ModRevision, 再用 etcdctl transaction CAS pointer. 首次发布条件是 `create(active) = 0`; 更新条件是 active value 和 ModRevision 都匹配.
+2. Capture active pointer 的 generation 和 ModRevision, 再用 etcd transaction CAS pointer. 首次发布条件是 `create(active) = 0`; 更新条件是 active value 和 ModRevision 都匹配.
+
+`pemcast publish` 读取 pack 后会独立重算 encoded bundle hash, file hash, whole digest, generation 和 TLS pair, 并拒绝 metadata keys 与当前 etcd prefix 不一致. 手动 `publish-v5.sh` 维护同一不变量, 但它不是产品镜像的一部分.
 
 v5 允许存在未被 active pointer 引用的孤儿 bundle. 这是设计结果, 不是失败: bundle 是 object database, active pointer 是 ref. 消费者只 watch active prefix, 因此 bundle stage 本身没有发布语义. 唯一 commit point 是 pointer CAS 成功.
 
@@ -173,17 +175,19 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/appcmd/agent`: application 组装, output lock 与 once/watch 生命周期.
 - `internal/appcmd/config`: config example 和校验命令.
 - `internal/appcmd/pack`: local pack CLI adapter.
+- `internal/appcmd/publish`: v5 staged publication CLI adapter.
 - `internal/appcmd/status`: 本地状态 CLI.
 - `internal/config`: schema, defaults, validation 和 cfgm 集成.
 - `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v5` kind-first key builder.
 - `internal/etcdsource`: active-prefix snapshot/watch 和 exact bundle fetch.
 - `internal/bundle`: v5 单 key manifest, digest, generation 和 TLS 校验.
 - `internal/pack`: local TLS 校验, deterministic bundle, metadata 和 stage transaction 生成.
+- `internal/publisher`: v5 pack 的 immutable staging 与 active pointer CAS 状态机.
 - `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
 - `internal/hook`: process group, 环境边界, 输出限额和 event schema.
 - `internal/state`: activation/hook state.
 - `internal/status`: 只读本地 target 状态.
-- `scripts/publish-v5.sh`: etcdctl staged publication helper.
+- `.agents/skills/repo-deployment/scripts/publish-v5.sh`: 手动 etcdctl staged publication fallback.
 
 已知边界: snapshot/watch 与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.
