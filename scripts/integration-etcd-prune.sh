@@ -18,6 +18,14 @@ __cleanup() {
     fi
 }
 
+__on_exit() {
+    _exit_code="$?"
+    if (( _exit_code != 0)); then
+        printf 'prune integration failed near line %s\n' "${BASH_LINENO[0]}" >&2
+    fi
+    __cleanup
+}
+
 __require_commands() {
     command -v docker >/dev/null
     command -v etcdctl >/dev/null
@@ -153,7 +161,8 @@ __main() {
     else
         (cd "${_repo_root}" && go build -o "${_binary}" ./cmd/pemcast)
     fi
-    trap __cleanup EXIT HUP INT TERM
+    trap __on_exit EXIT
+    trap '__cleanup; exit 130' HUP INT TERM
 
     cat >"${_work_dir}/identity.ext" <<'EOF'
 basicConstraints=critical,CA:FALSE
