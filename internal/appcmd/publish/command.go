@@ -14,10 +14,10 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/publisher"
 )
 
-// Command applies one validated local v5 pack to etcd.
+// Command applies one validated local v6 pack to etcd.
 var Command = &cli.Command{
 	Name:  "publish",
-	Usage: "stage a v5 pack and commit its active pointer with etcd CAS",
+	Usage: "stage a v6 pack and commit its active pointer with etcd CAS",
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "pack-dir", Usage: "directory containing bundle.json and metadata.json", Required: true},
 		&cli.StringFlag{Name: "etcd-prefix", Usage: "override agent.etcd.prefix for this publication"},
@@ -59,7 +59,7 @@ var Command = &cli.Command{
 		}
 		_, err = fmt.Fprintf(
 			command.Root().Writer,
-			"pemcast v5 %s: %s %s\n",
+			"pemcast v6 %s: %s %s\n",
 			outcome, result.Metadata.TargetID, result.Metadata.Generation,
 		)
 		return err

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/lwmacct/260907-pemcast/internal/bundle"
 )
 
 func TestValidateTarget(t *testing.T) {
@@ -12,11 +14,12 @@ func TestValidateTarget(t *testing.T) {
 	cfg.Agent.StateDir = t.TempDir()
 	cfg.Agent.Targets = []Target{{
 		ID: "nginx", DeletePolicy: "retain",
+		Type: bundle.TypeTLSServer,
 		Output: Output{
 			Root: filepath.Join(t.TempDir(), "tls"), CurrentLink: "current", RetainReleases: 3, DirectoryMode: FileMode("0700"),
-			Mappings: []FileMapping{{Remote: "cert.pem", Local: "cert.pem", Mode: FileMode("0644")}, {Remote: "key.pem", Local: "key.pem", Mode: FileMode("0600")}},
+			Mappings: []FileMapping{{Remote: bundle.NameCertificateChain, Local: "fullchain.pem", Mode: FileMode("0644")}, {Remote: bundle.NamePrivateKey, Local: "privkey.pem", Mode: FileMode("0600")}},
 		},
-		Validation: Validation{Certificate: "cert.pem", PrivateKey: "key.pem"},
+		Validation: Validation{ServerNames: []string{"example.com"}},
 	}}
 	require.NoError(t, cfg.Validate())
 	cfg.Agent.Targets[0].Output.Mappings[1].Local = "../key.pem"
@@ -37,6 +40,33 @@ func TestValidateRejectsInvalidHookEnvironmentName(t *testing.T) {
 	target.Hook.PassEnvironment = []string{"BAD-NAME"}
 	cfg.Agent.Targets = []Target{target}
 	require.ErrorContains(t, cfg.Validate(), "valid environment variable name")
+}
+
+func TestValidateTargetTypesAndRequiredMappings(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.StateDir = t.TempDir()
+	target := validTarget("client", filepath.Join(t.TempDir(), "client"))
+	target.Type = bundle.TypeTLSClient
+	target.Validation.ServerNames = []string{"example.com"}
+	cfg.Agent.Targets = []Target{target}
+	require.ErrorContains(t, cfg.Validate(), "server-names is only valid")
+
+	target.Validation.ServerNames = nil
+	cfg.Agent.Targets[0] = target
+	require.NoError(t, cfg.Validate())
+
+	target.Type = bundle.TypeTrust
+	target.Output.Mappings = []FileMapping{
+		{Remote: bundle.NameCABundle, Local: "ca-bundle.pem", Mode: FileMode("0644")},
+	}
+	cfg.Agent.Targets[0] = target
+	require.NoError(t, cfg.Validate())
+
+	target.Output.Mappings = []FileMapping{
+		{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: FileMode("0644")},
+	}
+	cfg.Agent.Targets[0] = target
+	require.ErrorContains(t, cfg.Validate(), "missing remote mapping")
 }
 
 func TestValidateRejectsOverlappingOutputRoots(t *testing.T) {
@@ -64,13 +94,13 @@ func TestValidateCommonRejectsUnsafeEtcdPrefix(t *testing.T) {
 func validTarget(id, root string) Target {
 	return Target{
 		ID: id, DeletePolicy: "retain",
+		Type: bundle.TypeTLSServer,
 		Output: Output{
 			Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: FileMode("0700"),
 			Mappings: []FileMapping{
-				{Remote: "cert.pem", Local: "cert.pem", Mode: FileMode("0644")},
-				{Remote: "key.pem", Local: "key.pem", Mode: FileMode("0600")},
+				{Remote: bundle.NameCertificateChain, Local: "fullchain.pem", Mode: FileMode("0644")},
+				{Remote: bundle.NamePrivateKey, Local: "privkey.pem", Mode: FileMode("0600")},
 			},
 		},
-		Validation: Validation{Certificate: "cert.pem", PrivateKey: "key.pem"},
 	}
 }

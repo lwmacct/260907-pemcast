@@ -28,6 +28,7 @@ func TestPublishCommandRejectsPrefixMismatch(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t, "cli-publish")
 	packDir := filepath.Join(t.TempDir(), "pack")
 	result, err := pemcastpack.Build(pemcastpack.Options{
+		Type:            "tls-server",
 		TargetID:        "nginx",
 		EtcdPrefix:      "/tenants/other",
 		CertificatePath: certificatePath,

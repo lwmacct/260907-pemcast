@@ -1,41 +1,64 @@
 package bundle
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"time"
 )
 
-// ValidateKeyPair verifies that certificate and key form a valid TLS pair and returns the leaf certificate.
-func ValidateKeyPair(certPEM, keyPEM []byte) (*x509.Certificate, error) {
-	pair, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("parse TLS key pair: %w", err)
-	}
-	if len(pair.Certificate) == 0 {
-		return nil, fmt.Errorf("TLS certificate chain is empty")
-	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return nil, fmt.Errorf("parse TLS leaf certificate: %w", err)
-	}
-	return leaf, nil
+// Policy controls target-local validity and hostname checks.
+type Policy struct {
+	Now             time.Time
+	RejectExpired   bool
+	MinimumValidity time.Duration
+	ServerNames     []string
 }
 
-// ValidateValidity applies target-specific leaf lifetime policy.
-func ValidateValidity(leaf *x509.Certificate, now time.Time, rejectExpired bool, minimum time.Duration) error {
-	if leaf == nil {
-		return fmt.Errorf("TLS leaf certificate is nil")
+// ValidatePolicy applies one target's local certificate policy to decoded material.
+func ValidatePolicy(material *Material, policy Policy) error {
+	if material == nil {
+		return fmt.Errorf("bundle material is nil")
 	}
-	if leaf.NotBefore.After(now) {
-		return fmt.Errorf("TLS leaf certificate is not valid before %s", leaf.NotAfter.Format(time.RFC3339))
+	if policy.Now.IsZero() {
+		policy.Now = time.Now()
 	}
-	if rejectExpired && !leaf.NotAfter.After(now) {
-		return fmt.Errorf("TLS leaf certificate expired at %s", leaf.NotAfter.Format(time.RFC3339))
+	if len(material.Certificates) == 0 {
+		return fmt.Errorf("bundle contains no parsed certificates")
 	}
-	if minimum > 0 && leaf.NotAfter.Sub(now) < minimum {
-		return fmt.Errorf("TLS leaf certificate validity %s is less than required %s", leaf.NotAfter.Sub(now).Round(time.Second), minimum)
+	for index, certificate := range material.Certificates {
+		if certificate == nil {
+			return fmt.Errorf("bundle certificate %d is nil", index)
+		}
+		if certificate.NotBefore.After(policy.Now) {
+			return fmt.Errorf(
+				"bundle certificate %d is not valid before %s",
+				index, certificate.NotBefore.Format(time.RFC3339),
+			)
+		}
+		if policy.RejectExpired && !certificate.NotAfter.After(policy.Now) {
+			return fmt.Errorf(
+				"bundle certificate %d expired at %s",
+				index, certificate.NotAfter.Format(time.RFC3339),
+			)
+		}
+		if policy.MinimumValidity > 0 && certificate.NotAfter.Sub(policy.Now) < policy.MinimumValidity {
+			return fmt.Errorf(
+				"bundle certificate %d validity %s is less than required %s",
+				index, certificate.NotAfter.Sub(policy.Now).Round(time.Second), policy.MinimumValidity,
+			)
+		}
+	}
+	if material.Manifest.Type == TypeTLSServer {
+		for index, name := range policy.ServerNames {
+			if name == "" {
+				return fmt.Errorf("server name %d is empty", index)
+			}
+			if material.Leaf == nil {
+				return fmt.Errorf("TLS server bundle has no leaf certificate")
+			}
+			if err := material.Leaf.VerifyHostname(name); err != nil {
+				return fmt.Errorf("certificate does not match server name %q: %w", name, err)
+			}
+		}
 	}
 	return nil
 }

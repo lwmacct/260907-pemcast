@@ -51,17 +51,21 @@ __main() {
             nginx >/dev/null
 
     openssl req -x509 -newkey ed25519 -nodes -subj '/CN=integration-a' -days 2 \
+        -addext 'basicConstraints=critical,CA:FALSE' \
         -keyout "${_work_dir}/a-key.pem" -out "${_work_dir}/a-cert.pem" >/dev/null 2>&1
     openssl req -x509 -newkey ed25519 -nodes -subj '/CN=integration-b' -days 2 \
+        -addext 'basicConstraints=critical,CA:FALSE' \
         -keyout "${_work_dir}/b-key.pem" -out "${_work_dir}/b-cert.pem" >/dev/null 2>&1
 
     "${_binary}" tools pack \
+        --type tls-server \
         --target nginx \
         --certificate "${_work_dir}/a-cert.pem" \
         --private-key "${_work_dir}/a-key.pem" \
         --etcd-prefix /pemcast \
         --output-dir "${_work_dir}/pack-a" >/dev/null
     "${_binary}" tools pack \
+        --type tls-server \
         --target nginx \
         --certificate "${_work_dir}/b-cert.pem" \
         --private-key "${_work_dir}/b-key.pem" \
@@ -82,6 +86,7 @@ agent:
     prefix: /pemcast
   targets:
     - id: nginx
+      type: tls-server
       delete-policy: retain
       output:
         root: ${_work_dir}/tls
@@ -96,8 +101,6 @@ agent:
             local: privkey.pem
             mode: "0600"
       validation:
-        certificate: fullchain.pem
-        private-key: privkey.pem
         reject-expired: true
         minimum-validity: 1h
       hook:

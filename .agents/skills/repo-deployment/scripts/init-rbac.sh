@@ -191,9 +191,9 @@ __main() {
         done < <(printf '%s\n' "$PEMCAST_TARGETS" | tr ',' '\n')
     fi
 
-    _protocol_root="$(__normalize_prefix "$_etcd_prefix")/v5"
-    if [[ "$_protocol_root" == "//v5" ]]; then
-        _protocol_root="/v5"
+    _protocol_root="$(__normalize_prefix "$_etcd_prefix")/v6"
+    if [[ "$_protocol_root" == "//v6" ]]; then
+        _protocol_root="/v6"
     fi
 
     if [[ ${#_raw_targets[@]} -eq 0 ]]; then
@@ -324,10 +324,10 @@ __main() {
     fi
 
     if [[ "${_broad}" == true ]]; then
-        printf 'pemcast v5 broad RBAC initialized below %s for users %s/%s: %s\n' \
+        printf 'pemcast v6 broad RBAC initialized below %s for users %s/%s: %s\n' \
             "$_namespace_prefix" "$_agent_user" "$_publisher_user" "${_targets[*]}"
     else
-        printf 'pemcast v5 target RBAC initialized below %s for users %s/%s: %s\n' \
+        printf 'pemcast v6 target RBAC initialized below %s for users %s/%s: %s\n' \
             "$_protocol_root" "$_agent_user" "$_publisher_user" "${_targets[*]}"
     fi
 }

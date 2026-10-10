@@ -97,23 +97,17 @@ func (c *Controller) Reconcile(ctx context.Context, id, generation string, revis
 	if err != nil {
 		return fmt.Errorf("fetch target %q generation %q: %w", id, generation, err)
 	}
-	certPEM, ok := material.Files[target.Validation.Certificate]
-	if !ok {
-		return fmt.Errorf("target %q certificate file %q is absent", id, target.Validation.Certificate)
+	if material.Manifest.Type != target.Type {
+		return fmt.Errorf(
+			"target %q expects bundle type %q but received %q",
+			id, target.Type, material.Manifest.Type,
+		)
 	}
-	keyPEM, ok := material.Files[target.Validation.PrivateKey]
-	if !ok {
-		return fmt.Errorf("target %q private key file %q is absent", id, target.Validation.PrivateKey)
-	}
-	leaf, err := bundle.ValidateKeyPair(certPEM, keyPEM)
-	if err != nil {
+	if err := bundle.ValidatePolicy(material, bundle.Policy{
+		Now: time.Now(), RejectExpired: target.Validation.RejectExpired,
+		MinimumValidity: target.Validation.MinimumValidity, ServerNames: target.Validation.ServerNames,
+	}); err != nil {
 		return fmt.Errorf("validate target %q: %w", id, err)
-	}
-	if err := bundle.ValidateValidity(leaf, time.Now(), target.Validation.RejectExpired, target.Validation.MinimumValidity); err != nil {
-		return fmt.Errorf("validate target %q: %w", id, err)
-	}
-	if !material.Manifest.HasPair(target.Validation.Certificate, target.Validation.PrivateKey) {
-		return fmt.Errorf("target %q certificate/private-key pair is not declared by the manifest", id)
 	}
 	if c.dryRun {
 		c.logger.InfoContext(ctx, "bundle validated in dry-run mode", "target", id, "generation", generation, "digest", material.Digest)
@@ -162,7 +156,7 @@ func (c *Controller) Reconcile(ctx context.Context, id, generation string, revis
 	if err := c.state.Save(id, next); err != nil {
 		return err
 	}
-	c.logger.InfoContext(ctx, "certificate bundle activated", "target", id, "generation", generation, "digest", material.Digest, "not_after", leaf.NotAfter)
+	c.logger.InfoContext(ctx, "certificate bundle activated", "target", id, "type", target.Type, "generation", generation, "digest", material.Digest)
 	return nil
 }
 

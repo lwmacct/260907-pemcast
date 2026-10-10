@@ -1,6 +1,6 @@
 # pemcast
 
-pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent, 同时提供 v5 staged publisher. `pemcast tools pack` 从证书内容计算 content-addressed generation, 并生成 deterministic bundle 与 metadata; `pemcast publish` 先 stage immutable bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. pemcast agent 监听指针变化, 按事件 revision 取回 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
+pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent, 同时提供 v6 staged publisher. `pemcast tools pack` 从证书内容计算 content-addressed generation, 并生成 deterministic bundle 与 metadata; `pemcast publish` 先 stage immutable bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. pemcast agent 监听指针变化, 按事件 revision 取回 bundle, 校验 SHA-256 与 `tls-server` / `tls-client` / `trust` 三种语义, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
 
 ```mermaid
 flowchart LR
@@ -21,8 +21,9 @@ flowchart LR
 - 证书发布者与消费者解耦: pemcast 不包含签发, 审批, lease manager 或 HTTP API.
 - 远端 generation 内容寻址: generation 由完整 bundle digest 计算, 相同内容天然相同, 内容变化必然得到新名字.
 - 发布分阶段: bundle 是 immutable object database, active pointer 是 ref; bundle 先 stage, pointer CAS 是唯一 commit point.
+- v5 到 v6 升级显式分步: 只迁移 active v5 数据, destination bundle 先 stage, source v5 pointer 的 value + ModRevision 参与 destination CAS.
 - 并发安全: 首次发布比较 create revision, 更新比较 active value + ModRevision; 冲突失败而不是覆盖.
-- 校验发生在启用前: manifest 严格解析, 文件逐一校验 SHA-256, 证书和私钥必须通过 `tls.X509KeyPair`, 并满足有效期策略.
+- 校验发生在启用前: manifest 严格解析, 文件逐一校验 SHA-256; identity bundle 校验链顺序, EKU 和证书/私钥匹配, trust bundle 校验全部证书都是 CA, 并满足有效期策略.
 - 本地发布内容寻址: release 目录名来自 bundle digest, 相同内容不会重复写入; 复用前校验 marker, bytes, mode 和目录树.
 - 应用路径稳定: 应用读取 `current/...`, pemcast 通过临时 symlink 和 rename 原子切换目标.
 - output root 互斥: 非 dry-run agent 按排序获取每个 root 的 `.pemcast/agent.lock`, 并持有到进程退出.
@@ -39,26 +40,38 @@ pemcast config example > config/config.yaml
 pemcast --config config/config.yaml config validate
 ```
 
-至少配置 `agent.etcd.endpoints`, 一个 target 的 `output.root`, mappings, validation pair 和 hook.
+至少配置 `agent.etcd.endpoints`, 一个 target 的 `type`, `output.root`, mappings, validation policy 和 hook. 常用 type 是 `tls-server`, `tls-client` 和 `trust`.
 
-etcd namespace prefix 默认 `/pemcast`. agent 与 publish 通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 配置, pack CLI 通过 `--etcd-prefix` 配置. 程序只硬编码 `/v5` 子协议:
+etcd namespace prefix 默认 `/pemcast`. agent 与 publish 通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 配置, pack CLI 通过 `--etcd-prefix` 配置. 程序只硬编码 `/v6` 子协议:
 
 ```text
-/pemcast/v5/active/nginx = sha256-<bundle-digest>
-/pemcast/v5/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
+/pemcast/v6/active/nginx = sha256-<bundle-digest>
+/pemcast/v6/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
-etcd 认证使用单个 `username:password` 值, 按第一个冒号切分, 密码可以继续包含冒号. agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`; publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`.
+etcd 认证使用单个 `username:password` 值, 按第一个冒号切分, 密码可以继续包含冒号. agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`; publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`; upgrade 依次读取 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`.
 
 本地打包:
 
 ```bash
 pemcast tools pack \
+  --type tls-server \
   --etcd-prefix /pemcast \
   --target nginx \
   --certificate fullchain.pem \
   --private-key privkey.pem \
   --output-dir /secure/tmp/nginx-pack
+```
+
+`tls-client` 使用相同的 `--certificate` 和 `--private-key` 输入, 但会按 clientAuth 用途校验. `trust` 使用 `--ca ca-bundle.pem`, 只分发 CA trust bundle, 不包含私钥:
+
+```bash
+pemcast tools pack \
+  --type trust \
+  --etcd-prefix /pemcast \
+  --target internal-ca \
+  --ca ca-bundle.pem \
+  --output-dir /secure/tmp/internal-ca-pack
 ```
 
 输出文件是:
@@ -70,11 +83,17 @@ pemcast tools pack \
 └── stage.txn
 ```
 
-`pack` 不访问 etcd. `bundle.json` 与 `stage.txn` 包含私钥, 文件权限为 0600; pack 目录只能保存在受限存储中.
+三种常用 type 的使用场景:
+
+- `tls-server`: Nginx, Envoy, HAProxy, etcd server, HTTPS API 和 gRPC server 的服务端身份.
+- `tls-client`: etcd client mTLS, PostgreSQL/MySQL mTLS 和服务间 mTLS 的客户端身份.
+- `trust`: 应用信任内部 CA 的 `ca-bundle.pem`; 它没有私钥, 也不用于 pemcast 自身连接 etcd 的 bootstrap CA.
+
+`pack` 不访问 etcd. identity bundle 的 `bundle.json` 与 `stage.txn` 包含私钥, 文件权限为 0600; pack 目录只能保存在受限存储中.
 
 ### 本地 seed
 
-`seed` 用于自引用消费者的首装和显式救援. 它读取一个完整 v5 pack, 按 agent 配置中的 target 校验 prefix, target, digest, TLS pair, mapping 和有效期, 然后在不访问 etcd 的情况下创建本地 content-addressed release 并原子切换 `current`:
+`seed` 用于自引用消费者的首装和显式救援. 它读取一个完整 v6 pack, 按 agent 配置中的 target 校验 prefix, target, type, digest, 证书语义, mapping 和有效期, 然后在不访问 etcd 的情况下创建本地 content-addressed release 并原子切换 `current`:
 
 ```bash
 pemcast \
@@ -109,9 +128,49 @@ PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
 pemcast publish --pack-dir /secure/tmp/nginx-pack
 ```
 
-publish 读取 pack 后独立重算 encoded hash, 文件 hash, whole digest, generation 和 TLS pair. 如果 bundle key 已存在, 必须与本地 `bundle.json` bytes 完全相同. 然后捕获 active pointer, 首次发布用 `create(active) = 0` CAS, 更新用 active value + ModRevision CAS. active 已经等于目标 generation 时直接 no-op. etcd transaction 成功即表示本次发布已提交; 若随后被另一个合法发布覆盖, 本次结果仍是 published.
+publish 读取 pack 后独立重算 encoded hash, 文件 hash, semantic whole digest, generation 和证书语义. 如果 bundle key 已存在, 必须与本地 `bundle.json` bytes 完全相同. 然后捕获 active pointer, 首次发布用 `create(active) = 0` CAS, 更新用 active value + ModRevision CAS. active 已经等于目标 generation 时直接 no-op. etcd transaction 成功即表示本次发布已提交; 若随后被另一个合法发布覆盖, 本次结果仍是 published.
 
 bundle stage 可能留下未被引用的孤儿 bundle; 这不产生消费者事件, 也不会改变本地证书. 只有 pointer CAS 成功才是发布 commit point.
+
+### v5 到 v6 upgrade
+
+`pemcast upgrade` 是与 `publish` 平级的在线 etcd 管理命令, 只支持上一个版本 `v5` 到当前版本 `v6`. 它不迁移 v4 及更早数据, 不迁移 v5 历史 bundle, 也不修改 etcd users/roles.
+
+先执行纯读 dry-run:
+
+```bash
+PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
+PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
+ETCDCTL_USER_UPGRADE='upgrade-admin:<password>' \
+pemcast upgrade \
+  --default-type tls-server \
+  --target-type etcd-client=tls-client \
+  --dry-run
+```
+
+去掉 `--dry-run` 后, upgrade 会:
+
+1. Snapshot `<prefix>/v5/active/` 和 `<prefix>/v6/active/`, 拒绝 v4, 空 v5 或 mixed state.
+2. 按同一个 v5 snapshot revision exact-key 读取每个 active bundle.
+3. 严格校验 canonical v5 `fullchain.pem + privkey.pem` 和 historical digest.
+4. 按操作者声明的 type 重建 v6 identity 并执行 v6 证书语义校验.
+5. Stage v6 immutable bundle; 同 generation 不同 bytes 时失败.
+6. 在 source v5 pointer value + ModRevision 未变化且 destination v6 pointer 仍不存在的条件下 CAS 写入 v6 pointer.
+7. 全部 target postverify 成功后, 才允许可选删除 `<prefix>/v5/`.
+
+v5 没有 server/client 语义, 因此 upgrade 不自动猜 type. 未显式 override 的 target 使用 `--default-type`; 如果 default 缺失或无效则拒绝执行. v5 不能升级为 `trust`.
+
+需要删除旧协议数据时, 必须先停止或禁用旧 v5 publisher, 并显式确认:
+
+```bash
+pemcast upgrade \
+  --default-type tls-server \
+  --target-type etcd-client=tls-client \
+  --delete-old-v5 \
+  --yes
+```
+
+默认保留 `/prefix/v5/`, 这是安全回滚窗口. 删除范围精确等于 `<prefix>/v5/`, 不会删除 namespace prefix 本身. 删除 v5 active key 会让仍在 watch 的旧 agent 收到 delete event; `retain` 旧 agent 会保留本地 release, `fail` 旧 agent 会报告错误. 旧 agent 不会自动看到 v6, 应在确认消费者切换后再清理.
 
 先不落盘测试远端内容:
 
@@ -213,6 +272,7 @@ docker run --rm --platform linux/amd64 \
   --volume "${_work}:/work" \
   "${_image}" \
   pemcast tools pack \
+    --type tls-server \
     --etcd-prefix /pemcast \
     --target nginx \
     --certificate /certs/fullchain.pem \
@@ -230,7 +290,7 @@ docker run --rm --platform linux/amd64 \
 
 如果 etcd 使用 mTLS, 同时挂载 CA/client cert/key 并设置 `PEMCAST_AGENT_ETCD_TLS_*` 环境变量. 使用 exact version tag 或 digest.
 
-需要应急或审计时, 可以在 pemcast 镜像外运行仓库中的 `.agents/skills/repo-deployment/scripts/publish-v5.sh`, 手动执行 etcdctl 事务. 该 helper 不进入产品镜像.
+需要应急或审计时, 可以在 pemcast 镜像外运行仓库中的 `.agents/skills/repo-deployment/scripts/publish-v6.sh`, 手动执行 etcdctl 事务. 该 helper 不进入产品镜像.
 
 ## 回滚
 
@@ -243,18 +303,20 @@ PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
 pemcast publish --pack-dir /secure/archive/nginx-pack-sha256-old
 ```
 
-如果旧 pack 目录没有保留, 使用当时完全相同的证书和私钥重新 `pemcast tools pack`; deterministic generation 与 bundle bytes 会相同. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
+如果旧 pack 目录没有保留, 使用当时完全相同的证书材料和 type 重新 `pemcast tools pack`; deterministic generation 与 bundle bytes 会相同. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
 
-## v4 到 v5 破坏式切换
+## v4/v5 到 v6 破坏式切换
 
-pemcast v5 不读取, 不迁移和不兼容 v2/v3/v4 数据. 推荐切换顺序:
+pemcast v6 runtime 不读取, 不迁移和不兼容旧协议数据. `upgrade` 只提供 canonical v5 active 数据到 v6 的一次式迁移, 不支持 v4 及更早版本. 推荐切换顺序:
 
-1. 初始化 v5 active reader, target bundle 和 publisher roles/users.
-2. 使用 v5 `pack` + `publish` 将现有证书重新发布到 `<prefix>/v5/...`.
-3. 将 agent 配置和镜像升级到 v5, 保持同一个 `agent.etcd.prefix`.
-4. 执行 `agent --once --dry-run`, 再执行一次同步或重启 watch agent.
-5. 用 `etcdctl` 核对 v5 active/bundle 和未授权访问.
-6. 确认消费端证书正常后, 删除旧 protocol prefixes 和旧 roles/users.
+1. 停止或禁用旧 v5 publisher.
+2. 初始化 v6 active reader, target bundle 和 publisher roles/users.
+3. 执行 `upgrade --dry-run`, 确认 type 映射和 v5 -> v6 generation 对照.
+4. 执行 `upgrade`, 默认保留 v5.
+5. 将 agent 配置和镜像升级到 v6, 保持同一个 `agent.etcd.prefix`.
+6. 执行 `agent --once --dry-run`, 再执行一次同步或重启 watch agent.
+7. 用 `etcdctl` 核对 v6 active/bundle 和未授权访问.
+8. 确认所有消费端证书正常且旧客户端不再依赖 v5 后, 使用 `upgrade --delete-old-v5 --yes` 清理, 再按外部策略处理旧 roles/users.
 
 ## Hook 契约
 
@@ -287,6 +349,7 @@ pemcast tools pack
 pemcast publish
 pemcast tools seed
 pemcast status --json
+pemcast upgrade --dry-run
 pemcast version
 ```
 
@@ -297,7 +360,7 @@ pemcast version
 仓库在 `.agents/skills/` 中包含三个 Codex skills:
 
 - `$repo-architecture`: 架构, 包边界, 同步不变量和失败行为.
-- `$repo-deployment`: agent 配置, pack/publish 发布, 手动 etcdctl fallback, 回滚, 运维和诊断.
+- `$repo-deployment`: agent 配置, pack/publish 发布, v5 到 v6 upgrade, 手动 etcdctl fallback, 回滚, 运维和诊断.
 - `$repo-development`: Go 修改, 包级测试, 生成配置, 构建和发布要求.
 
 详细 references 位于:
@@ -317,6 +380,7 @@ go run ./cmd/pemcast --help
 go run ./cmd/pemcast --config config/config.yaml config validate
 bash scripts/integration-etcd.sh
 bash scripts/integration-etcd-seed.sh
+bash scripts/integration-etcd-upgrade.sh
 ```
 
 GitHub CI 会在 push 和 pull request 上运行 test, vet, race 和真实 etcd 3.7.2 集成测试. `config/config.example.yaml` 由 `internal/config` 测试生成. 修改配置 schema 后运行 `go test ./internal/config`, 并提交更新后的示例文件.

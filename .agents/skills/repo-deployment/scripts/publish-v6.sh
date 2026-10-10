@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Manual pemcast v5 publisher for operators who intentionally use etcdctl.
+# Manual pemcast v6 publisher for operators who intentionally use etcdctl.
 # The supported product path is `pemcast tools pack` followed by `pemcast publish`.
 
 set -euo pipefail
@@ -9,9 +9,9 @@ _ETCDCTL="${ETCDCTL:-etcdctl}"
 _PACK_DIR=""
 
 __usage() {
-  printf '%s\n' 'Usage: publish-v5.sh --pack-dir DIR'
+  printf '%s\n' 'Usage: publish-v6.sh --pack-dir DIR'
   printf '%s\n' ''
-  printf '%s\n' 'Publish a pemcast v5 pack with etcdctl.'
+  printf '%s\n' 'Publish a pemcast v6 pack with etcdctl.'
   printf '%s\n' ''
   printf '%s\n' 'Required:'
   printf '%s\n' '  --pack-dir DIR  directory produced by pemcast tools pack'
@@ -29,10 +29,19 @@ __read_metadata() {
   _metadata_file="${_PACK_DIR}/metadata.json"
 
   _metadata_schema="$(jq -er '.schema' "${_metadata_file}")"
-  if [[ "${_metadata_schema}" != 'pemcast-pack/v5' ]]; then
+  if [[ "${_metadata_schema}" != 'pemcast-pack/v6' ]]; then
     printf '%s\n' 'unsupported pack metadata schema' >&2
     return 1
   fi
+
+  _metadata_type="$(jq -er '.type' "${_metadata_file}")"
+  case "${_metadata_type}" in
+    tls-server|tls-client|trust) ;;
+    *)
+      printf '%s\n' 'unsupported pack certificate type' >&2
+      return 1
+      ;;
+  esac
 
   _etcd_prefix="$(jq -er '.["etcd-prefix"]' "${_metadata_file}")"
   _target_id="$(jq -er '.["target-id"]' "${_metadata_file}")"
@@ -42,9 +51,9 @@ __read_metadata() {
   _bundle_value_sha256="$(jq -er '.["bundle-value-sha256"]' "${_metadata_file}")"
 
   if [[ "${_etcd_prefix}" == '/' ]]; then
-    _protocol_root='/v5'
+    _protocol_root='/v6'
   else
-    _protocol_root="${_etcd_prefix}/v5"
+    _protocol_root="${_etcd_prefix}/v6"
   fi
   _expected_active_key="${_protocol_root}/active/${_target_id}"
   _expected_bundle_key="${_protocol_root}/bundles/${_target_id}/${_generation}"
@@ -198,11 +207,11 @@ __main() {
   __stage_bundle
   __capture_active
   if [[ "${_active_generation}" == "${_generation}" ]]; then
-    printf '%s\n' "pemcast v5 publication no-op: ${_target_id} ${_generation}"
+    printf '%s\n' "pemcast v6 publication no-op: ${_target_id} ${_generation}"
     return 0
   fi
   __commit_pointer
-  printf '%s\n' "pemcast v5 published: ${_target_id} ${_generation}"
+    printf '%s\n' "pemcast v6 published: ${_target_id} ${_generation}"
 }
 
 __cleanup() {

@@ -22,9 +22,10 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/bundle"
 )
 
-func TestBuildProducesDeterministicV5Artifacts(t *testing.T) {
+func TestBuildProducesDeterministicV6Artifacts(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	options := Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/tenants/example/",
 		CertificatePath: certificatePath,
@@ -39,25 +40,64 @@ func TestBuildProducesDeterministicV5Artifacts(t *testing.T) {
 
 	manifest, files, digest, err := bundle.Decode(first.Bundle)
 	require.NoError(t, err)
-	require.Equal(t, bundle.SchemaV5, manifest.Schema)
+	require.Equal(t, bundle.SchemaV6, manifest.Schema)
 	require.Equal(t, digest, first.Metadata.BundleSHA256)
 	require.Equal(t, bundle.Generation(digest), first.Metadata.Generation)
 	require.Equal(t, hashBytes(first.Bundle), first.Metadata.BundleValueSHA256)
 	require.Contains(t, files, "fullchain.pem")
 	require.Contains(t, files, "privkey.pem")
 	require.Equal(t, "/tenants/example", first.Metadata.EtcdPrefix)
-	require.Equal(t, "/tenants/example/v5/active/nginx", first.Metadata.ActiveKey)
+	require.Equal(t, "/tenants/example/v6/active/nginx", first.Metadata.ActiveKey)
 	require.Equal(
 		t,
-		"/tenants/example/v5/bundles/nginx/"+first.Metadata.Generation,
+		"/tenants/example/v6/bundles/nginx/"+first.Metadata.Generation,
 		first.Metadata.BundleKey,
 	)
 
-	condition := `create("/tenants/example/v5/bundles/nginx/` + first.Metadata.Generation + `") = "0"`
+	condition := `create("/tenants/example/v6/bundles/nginx/` + first.Metadata.Generation + `") = "0"`
 	require.True(t, strings.HasPrefix(string(first.StageTxn), condition))
-	putLine := `put "/tenants/example/v5/bundles/nginx/` + first.Metadata.Generation + `" "`
+	putLine := `put "/tenants/example/v6/bundles/nginx/` + first.Metadata.Generation + `" "`
 	require.True(t, strings.Contains(string(first.StageTxn), putLine))
 	require.True(t, strings.HasSuffix(string(first.StageTxn), "\"\n\n\n"))
+}
+
+func TestBuildSupportsClientAndTrustTypes(t *testing.T) {
+	certificatePath, privateKeyPath := writeKeyPairWithUsage(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	client, err := Build(Options{
+		Type:            bundle.TypeTLSClient,
+		TargetID:        "etcd-client",
+		EtcdPrefix:      "/pemcast",
+		CertificatePath: certificatePath,
+		PrivateKeyPath:  privateKeyPath,
+	})
+	require.NoError(t, err)
+
+	manifest, files, digest, err := bundle.Decode(client.Bundle)
+	require.NoError(t, err)
+	require.Equal(t, bundle.TypeTLSClient, client.Metadata.Type)
+	require.Equal(t, bundle.TypeTLSClient, manifest.Type)
+	require.Equal(t, digest, client.Metadata.BundleSHA256)
+	require.Equal(t, bundle.RoleCertificateChain, client.Metadata.Files[bundle.NameCertificateChain].Role)
+	require.Equal(t, bundle.RolePrivateKey, client.Metadata.Files[bundle.NamePrivateKey].Role)
+	require.Len(t, files, 2)
+
+	caPath := writeCACertificate(t)
+	trust, err := Build(Options{
+		Type:       bundle.TypeTrust,
+		TargetID:   "internal-ca",
+		EtcdPrefix: "/pemcast",
+		CAPath:     caPath,
+	})
+	require.NoError(t, err)
+
+	manifest, files, digest, err = bundle.Decode(trust.Bundle)
+	require.NoError(t, err)
+	require.Equal(t, bundle.TypeTrust, trust.Metadata.Type)
+	require.Equal(t, bundle.TypeTrust, manifest.Type)
+	require.Equal(t, digest, trust.Metadata.BundleSHA256)
+	require.Equal(t, bundle.RoleCACertificate, trust.Metadata.Files[bundle.NameCABundle].Role)
+	require.Len(t, files, 1)
+	require.NotContains(t, files, bundle.NamePrivateKey)
 }
 
 func TestBuildRejectsMismatchedTLSKeyPair(t *testing.T) {
@@ -65,6 +105,7 @@ func TestBuildRejectsMismatchedTLSKeyPair(t *testing.T) {
 	_, otherPrivateKeyPath := writeKeyPair(t)
 
 	_, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -77,6 +118,7 @@ func TestBuildRejectsUnsafeTargetAndPrefix(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 
 	_, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "../nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -85,6 +127,7 @@ func TestBuildRejectsUnsafeTargetAndPrefix(t *testing.T) {
 	require.ErrorContains(t, err, "unsafe")
 
 	_, err = Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "pemcast",
 		CertificatePath: certificatePath,
@@ -96,6 +139,7 @@ func TestBuildRejectsUnsafeTargetAndPrefix(t *testing.T) {
 func TestWriteCreatesPrivateArtifactsAndRefusesReplacement(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -128,6 +172,7 @@ func TestWriteRejectsUnsafeOutputDirectory(t *testing.T) {
 func TestWriteRejectsInvalidPack(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -146,6 +191,7 @@ func TestWriteRejectsInvalidPack(t *testing.T) {
 func TestWriteRebuildsMissingStageTransaction(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -162,6 +208,7 @@ func TestWriteRebuildsMissingStageTransaction(t *testing.T) {
 func TestWriteRejectsMismatchedStageTransaction(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -179,6 +226,7 @@ func TestWriteRejectsMismatchedStageTransaction(t *testing.T) {
 func TestReadValidatesOfficialPackWithoutRequiringStageTransaction(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -202,6 +250,7 @@ func TestReadValidatesOfficialPackWithoutRequiringStageTransaction(t *testing.T)
 func TestReadRejectsTamperedBundleAndUnknownMetadataField(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -217,7 +266,7 @@ func TestReadRejectsTamperedBundleAndUnknownMetadataField(t *testing.T) {
 
 	directory := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(directory, "bundle.json"), result.Bundle, 0o600))
-	invalidMetadata := `{"schema":"pemcast-pack/v5","extra":true}`
+	invalidMetadata := `{"schema":"pemcast-pack/v6","extra":true}`
 	require.NoError(t, os.WriteFile(filepath.Join(directory, "metadata.json"), []byte(invalidMetadata), 0o600))
 	_, err = Read(directory)
 	require.ErrorContains(t, err, "unknown")
@@ -226,6 +275,7 @@ func TestReadRejectsTamperedBundleAndUnknownMetadataField(t *testing.T) {
 func TestValidateRejectsInconsistentMetadata(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t)
 	result, err := Build(Options{
+		Type:            bundle.TypeTLSServer,
 		TargetID:        "nginx",
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,
@@ -255,26 +305,15 @@ func TestValidateRejectsInconsistentMetadata(t *testing.T) {
 	require.NoError(t, err)
 	wrongPair.Metadata.BundleValueSHA256 = hashBytes(wrongPair.Bundle)
 	wrongPair.Metadata.EncodedSize = len(wrongPair.Bundle)
-	manifest, _, _, err := bundle.Decode(wrongPair.Bundle)
-	require.NoError(t, err)
-	for _, file := range manifest.Files {
-		if file.Name == "fullchain.pem" {
-			wrongCertificateMetadata := wrongPair.Metadata.Files[file.Name]
-			wrongCertificateMetadata.SHA256 = file.SHA256
-			wrongPair.Metadata.Files[file.Name] = wrongCertificateMetadata
-		}
-	}
-	wrongPair.Metadata.BundleSHA256 = bundle.ContentDigest(map[string][]byte{
-		"fullchain.pem": []byte("not-a-certificate"),
-		"privkey.pem":   mustRead(t, privateKeyPath),
-	})
-	wrongPair.Metadata.Generation = bundle.Generation(wrongPair.Metadata.BundleSHA256)
-	wrongPair.Metadata.BundleKey = "/pemcast/v5/bundles/nginx/" + wrongPair.Metadata.Generation
 	err = Validate(wrongPair)
-	require.ErrorContains(t, err, "TLS pair is invalid")
+	require.ErrorContains(t, err, "decode pack bundle")
 }
 
 func writeKeyPair(t *testing.T) (string, string) {
+	return writeKeyPairWithUsage(t, nil)
+}
+
+func writeKeyPairWithUsage(t *testing.T, usage []x509.ExtKeyUsage) (string, string) {
 	t.Helper()
 
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -284,6 +323,7 @@ func writeKeyPair(t *testing.T) (string, string) {
 		Subject:      pkix.Name{CommonName: "pack-test"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Hour),
+		ExtKeyUsage:  usage,
 	}
 	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
 	require.NoError(t, err)
@@ -296,6 +336,27 @@ func writeKeyPair(t *testing.T) (string, string) {
 	require.NoError(t, os.WriteFile(certificatePath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), 0o600))
 	require.NoError(t, os.WriteFile(privateKeyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
 	return certificatePath, privateKeyPath
+}
+
+func writeCACertificate(t *testing.T) string {
+	t.Helper()
+
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "pack-test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	require.NoError(t, err)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "ca-bundle.pem")
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+	return path
 }
 
 func mustRead(t *testing.T, path string) []byte {

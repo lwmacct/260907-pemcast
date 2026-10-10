@@ -16,6 +16,18 @@ type Snapshot struct {
 	Active   map[string]string
 }
 
+// ActivePointer is one active-pointer value and its ModRevision.
+type ActivePointer struct {
+	Generation  string
+	ModRevision int64
+}
+
+// PrefixSnapshot is a linearizable view of every pointer below one exact protocol active prefix.
+type PrefixSnapshot struct {
+	Revision int64
+	Active   map[string]ActivePointer
+}
+
 // SnapshotActive retrieves every active pointer in one range read and returns
 // the revision from which a lossless watch can continue.
 func (c *Client) SnapshotActive(ctx context.Context) (Snapshot, error) {
@@ -29,6 +41,18 @@ func (c *Client) SnapshotActive(ctx context.Context) (Snapshot, error) {
 	return snapshotFromResponse(response, c.ActivePrefix())
 }
 
+// SnapshotActivePrefix retrieves pointers below one explicitly supplied active prefix.
+func (c *Client) SnapshotActivePrefix(ctx context.Context, activePrefix string) (PrefixSnapshot, error) {
+	requestCtx, cancel := c.requestContext(ctx)
+	defer cancel()
+
+	response, err := c.client.Get(requestCtx, activePrefix, clientv3.WithPrefix())
+	if err != nil {
+		return PrefixSnapshot{}, fmt.Errorf("read active prefix %q: %w", activePrefix, err)
+	}
+	return prefixSnapshotFromResponse(response, activePrefix)
+}
+
 func snapshotFromResponse(response *clientv3.GetResponse, activePrefix string) (Snapshot, error) {
 	active := make(map[string]string, len(response.Kvs))
 	for _, kv := range response.Kvs {
@@ -40,6 +64,19 @@ func snapshotFromResponse(response *clientv3.GetResponse, activePrefix string) (
 		active[targetID] = generation
 	}
 	return Snapshot{Revision: response.Header.Revision, Active: active}, nil
+}
+
+func prefixSnapshotFromResponse(response *clientv3.GetResponse, activePrefix string) (PrefixSnapshot, error) {
+	active := make(map[string]ActivePointer, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		targetID := strings.TrimPrefix(string(kv.Key), activePrefix)
+		generation := strings.TrimSpace(string(kv.Value))
+		if !bundle.SafeName(targetID) || !bundle.SafeName(generation) {
+			return PrefixSnapshot{}, fmt.Errorf("invalid active pointer %q=%q", kv.Key, kv.Value)
+		}
+		active[targetID] = ActivePointer{Generation: generation, ModRevision: kv.ModRevision}
+	}
+	return PrefixSnapshot{Revision: response.Header.Revision, Active: active}, nil
 }
 
 // FetchBundle reads one immutable single-key bundle at the requested revision.
@@ -72,12 +109,13 @@ func materialFromValue(targetID, generation string, value []byte, revision int64
 	if err := bundle.ValidateGeneration(generation, digest); err != nil {
 		return nil, err
 	}
+	certificates, leaf, err := manifest.ValidateFiles(files)
+	if err != nil {
+		return nil, fmt.Errorf("validate bundle semantics: %w", err)
+	}
 	return &bundle.Material{
-		TargetID:   targetID,
-		Generation: generation,
-		Revision:   revision,
-		Manifest:   manifest,
-		Files:      files,
-		Digest:     digest,
+		TargetID: targetID, Generation: generation, Revision: revision,
+		Manifest: manifest, Files: files, Digest: digest,
+		Certificates: certificates, Leaf: leaf,
 	}, nil
 }

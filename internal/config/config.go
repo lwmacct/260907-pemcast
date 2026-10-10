@@ -11,12 +11,13 @@ import (
 	"github.com/lwmacct/251207-go-pkg-cfgm/pkg/cfgm"
 	"github.com/urfave/cli/v3"
 
+	"github.com/lwmacct/260907-pemcast/internal/bundle"
 	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
 const AppName = "pemcast"
 
-// DefaultEtcdPrefix is the default namespace placed before the fixed v5 protocol root.
+// DefaultEtcdPrefix is the default namespace placed before the fixed v6 protocol root.
 const DefaultEtcdPrefix = "/pemcast"
 
 // Config is grouped by CLI subcommand so cfgm can trim command prefixes.
@@ -38,20 +39,22 @@ type Agent struct {
 
 // Tools groups command-specific local tool configuration.
 type Tools struct {
-	Pack Pack `json:"pack" desc:"local v5 pack builder configuration"`
-	Seed Seed `json:"seed" desc:"local v5 release seeder configuration"`
+	Pack Pack `json:"pack" desc:"local v6 pack builder configuration"`
+	Seed Seed `json:"seed" desc:"local v6 release seeder configuration"`
 }
 
-// Pack configures the offline deterministic v5 pack builder.
+// Pack configures the offline deterministic v6 pack builder.
 type Pack struct {
+	Type            string `json:"type"        desc:"certificate bundle type: tls-server, tls-client, or trust"`
 	TargetID        string `json:"target"      desc:"target ID"`
 	CertificatePath string `json:"certificate" desc:"path to fullchain.pem"`
 	PrivateKeyPath  string `json:"private-key" desc:"path to privkey.pem"`
-	EtcdPrefix      string `json:"etcd-prefix" desc:"etcd namespace prefix placed before /v5"`
+	CAPath          string `json:"ca"          desc:"path to ca-bundle.pem for trust"`
+	EtcdPrefix      string `json:"etcd-prefix" desc:"etcd namespace prefix placed before /v6"`
 	OutputDir       string `json:"output-dir"  desc:"new absolute directory for bundle.json, metadata.json, and stage.txn"`
 }
 
-// Seed configures offline materialization of one validated v5 pack.
+// Seed configures offline materialization of one validated v6 pack.
 type Seed struct {
 	TargetID string `json:"target"   desc:"target ID from the agent configuration"`
 	PackDir  string `json:"pack-dir" desc:"directory containing bundle.json and metadata.json"`
@@ -60,7 +63,7 @@ type Seed struct {
 
 // Etcd configures access to the remote etcd cluster.
 type Etcd struct {
-	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v5"`
+	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v6"`
 	Endpoints      []string      `json:"endpoints"       desc:"etcd endpoint URLs"`
 	User           string        `json:"-"`
 	DialTimeout    time.Duration `json:"dial-timeout"    desc:"etcd connection timeout"`
@@ -88,6 +91,7 @@ type Watch struct {
 // Target maps one immutable remote bundle to a local certificate directory.
 type Target struct {
 	ID           string     `json:"id"            desc:"target identifier and remote active-pointer name"`
+	Type         string     `json:"type"          desc:"certificate bundle type: tls-server, tls-client, or trust"`
 	DeletePolicy string     `json:"delete-policy" desc:"action when the active pointer is deleted: retain or fail"`
 	Output       Output     `json:"output"        desc:"local release directory configuration"`
 	Validation   Validation `json:"validation"    desc:"TLS material validation configuration"`
@@ -110,12 +114,11 @@ type FileMapping struct {
 	Mode   FileMode `json:"mode"   desc:"octal file mode"`
 }
 
-// Validation describes the certificate and key pair that must match.
+// Validation describes target-local certificate policy.
 type Validation struct {
-	Certificate     string        `json:"certificate"    desc:"remote certificate file to validate"`
-	PrivateKey      string        `json:"private-key"    desc:"remote private key file to validate"`
-	RejectExpired   bool          `json:"reject-expired" desc:"reject an expired leaf certificate"`
-	MinimumValidity time.Duration `json:"minimum-validity" desc:"minimum required remaining leaf validity"`
+	RejectExpired   bool          `json:"reject-expired" desc:"reject expired bundle certificates"`
+	MinimumValidity time.Duration `json:"minimum-validity" desc:"minimum required remaining certificate validity"`
+	ServerNames     []string      `json:"server-names"    desc:"required DNS names or IP addresses for tls-server targets"`
 }
 
 // Hook configures an executable invoked after a new release becomes active.
@@ -147,7 +150,7 @@ func DefaultConfig() Config {
 			},
 			Targets: nil,
 		},
-		Tools: Tools{Pack: Pack{EtcdPrefix: DefaultEtcdPrefix}},
+		Tools: Tools{Pack: Pack{Type: bundle.TypeTLSServer, EtcdPrefix: DefaultEtcdPrefix}},
 	}
 }
 
@@ -158,6 +161,7 @@ func ExampleConfig() Config {
 	cfg.Agent.Targets = []Target{
 		{
 			ID:           "nginx",
+			Type:         bundle.TypeTLSServer,
 			DeletePolicy: "retain",
 			Output: Output{
 				Root:           "/etc/nginx/tls",
@@ -170,8 +174,6 @@ func ExampleConfig() Config {
 				},
 			},
 			Validation: Validation{
-				Certificate:     "fullchain.pem",
-				PrivateKey:      "privkey.pem",
 				RejectExpired:   true,
 				MinimumValidity: time.Hour,
 			},
@@ -294,6 +296,10 @@ const AgentEtcdUserTemplate = `${ETCDCTL_USER_AGENT:-${ETCDCTL_USER:-}}`
 
 // PublishEtcdUserTemplate is the publish-specific credential fallback.
 const PublishEtcdUserTemplate = `${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}`
+
+// UpgradeEtcdUserTemplate prefers a dedicated migration credential before the
+// broad publisher and generic etcdctl fallbacks.
+const UpgradeEtcdUserTemplate = `${ETCDCTL_USER_UPGRADE:-${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}}`
 
 // LoadCommand loads the normal file and environment configuration sources.
 func LoadCommand(ctx context.Context, root *cli.Command) (*Config, error) {

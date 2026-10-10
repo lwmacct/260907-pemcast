@@ -15,14 +15,16 @@ import (
 // Command builds local publication artifacts without contacting etcd.
 var Command = &cli.Command{
 	Name:  "pack",
-	Usage: "validate a TLS pair and build deterministic etcd v5 publication artifacts",
+	Usage: "validate certificate material and build deterministic etcd v6 publication artifacts",
 	Action: config.Manager.Action(func(_ context.Context, command *cli.Command, cfg *config.Config) error {
 		options := cfg.Tools.Pack
 		result, err := pack.Build(pack.Options{
+			Type:            options.Type,
 			TargetID:        options.TargetID,
 			EtcdPrefix:      options.EtcdPrefix,
 			CertificatePath: options.CertificatePath,
 			PrivateKeyPath:  options.PrivateKeyPath,
+			CAPath:          options.CAPath,
 		})
 		if err != nil {
 			return err

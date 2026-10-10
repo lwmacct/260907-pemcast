@@ -23,15 +23,15 @@ func statusConfig(t *testing.T) (config.Config, string, string) {
 	cfg := config.DefaultConfig()
 	cfg.Agent.StateDir = stateDir
 	cfg.Agent.Targets = []config.Target{{
-		ID: "nginx",
+		ID:   "nginx",
+		Type: bundle.TypeTLSServer,
 		Output: config.Output{
 			Root: outputRoot, CurrentLink: "current", DirectoryMode: config.FileMode("0700"),
 			Mappings: []config.FileMapping{
-				{Remote: "cert.pem", Local: "cert.pem", Mode: config.FileMode("0644")},
-				{Remote: "key.pem", Local: "key.pem", Mode: config.FileMode("0600")},
+				{Remote: bundle.NameCertificateChain, Local: "fullchain.pem", Mode: config.FileMode("0644")},
+				{Remote: bundle.NamePrivateKey, Local: "privkey.pem", Mode: config.FileMode("0600")},
 			},
 		},
-		Validation: config.Validation{Certificate: "cert.pem", PrivateKey: "key.pem"},
 	}}
 	return cfg, stateDir, outputRoot
 }
@@ -61,7 +61,7 @@ func TestBuildReportsActiveTarget(t *testing.T) {
 	material := &bundle.Material{
 		Digest: "digest",
 		Files: map[string][]byte{
-			"cert.pem": []byte("certificate"), "key.pem": []byte("private-key"),
+			bundle.NameCertificateChain: []byte("certificate"), bundle.NamePrivateKey: []byte("private-key"),
 		},
 	}
 	_, err = deploy.New().Activate(material, target.Output)

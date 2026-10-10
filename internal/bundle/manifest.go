@@ -1,22 +1,39 @@
-// Package bundle defines and validates the immutable pemcast/v5 bundle format.
+// Package bundle defines and validates the immutable pemcast/v6 bundle format.
 package bundle
 
 import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json/v2"
+	"encoding/pem"
 	"fmt"
 	"sort"
 	"strings"
 )
 
-const SchemaV5 = "pemcast/v5"
+const SchemaV6 = "pemcast/v6"
 
 const (
-	KindCertificate = "certificate"
-	KindPrivateKey  = "private-key"
-	EncodingBase64  = "base64"
+	TypeTLSServer = "tls-server"
+	TypeTLSClient = "tls-client"
+	TypeTrust     = "trust"
+
+	RoleCertificateChain = "certificate-chain"
+	RolePrivateKey       = "private-key"
+	RoleCACertificate    = "ca-certificate"
+
+	NameCertificateChain = "fullchain.pem"
+	NamePrivateKey       = "privkey.pem"
+	NameCABundle         = "ca-bundle.pem"
+
+	EncodingBase64 = "base64"
 )
 
 // MaxEncodedBundleBytes bounds the complete single etcd value. TLS material is
@@ -26,65 +43,68 @@ const MaxEncodedBundleBytes = 1 << 20
 // Manifest is one complete, immutable certificate bundle stored under a single etcd key.
 type Manifest struct {
 	Schema string         `json:"schema"`
+	Type   string         `json:"type"`
 	Files  []ManifestFile `json:"files"`
-	Pairs  []Pair         `json:"pairs"`
 }
 
-// ManifestFile contains one inline file and its raw-content digest.
+// ManifestFile contains one inline file, its semantic role, and raw-content digest.
 type ManifestFile struct {
 	Name     string `json:"name"`
-	Kind     string `json:"kind"`
+	Role     string `json:"role"`
 	SHA256   string `json:"sha256"`
 	Encoding string `json:"encoding"`
 	Data     string `json:"data"`
 }
 
-// Pair declares a certificate and private key that must parse together.
-type Pair struct {
-	Certificate string `json:"certificate"`
-	PrivateKey  string `json:"private-key"`
-}
-
 // Material is a fully decoded and verified immutable bundle.
 type Material struct {
-	TargetID   string
-	Generation string
-	Revision   int64
-	Manifest   Manifest
-	Files      map[string][]byte
-	Digest     string
+	TargetID     string
+	Generation   string
+	Revision     int64
+	Manifest     Manifest
+	Files        map[string][]byte
+	Digest       string
+	Certificates []*x509.Certificate
+	Leaf         *x509.Certificate
 }
 
-// NewTLSManifest builds a deterministic manifest for one certificate pair.
-func NewTLSManifest(certificate, privateKey []byte, certificateName, privateKeyName string) (Manifest, string) {
+// NewTLSManifest builds a deterministic server or client identity manifest.
+func NewTLSManifest(bundleType string, certificate, privateKey []byte) (Manifest, string) {
 	files := []ManifestFile{
 		{
-			Name: certificateName, Kind: KindCertificate, SHA256: hash(certificate),
+			Name: NameCertificateChain, Role: RoleCertificateChain, SHA256: hash(certificate),
 			Encoding: EncodingBase64, Data: base64.StdEncoding.EncodeToString(certificate),
 		},
 		{
-			Name: privateKeyName, Kind: KindPrivateKey, SHA256: hash(privateKey),
+			Name: NamePrivateKey, Role: RolePrivateKey, SHA256: hash(privateKey),
 			Encoding: EncodingBase64, Data: base64.StdEncoding.EncodeToString(privateKey),
 		},
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	manifest := Manifest{Schema: SchemaV6, Type: bundleType, Files: files}
+	return manifest, ManifestDigest(manifest, map[string][]byte{
+		NameCertificateChain: certificate,
+		NamePrivateKey:       privateKey,
+	})
+}
+
+// NewTrustManifest builds a deterministic CA trust bundle.
+func NewTrustManifest(certificate []byte) (Manifest, string) {
 	manifest := Manifest{
-		Schema: SchemaV5,
-		Files:  files,
-		Pairs: []Pair{{
-			Certificate: certificateName,
-			PrivateKey:  privateKeyName,
+		Schema: SchemaV6,
+		Type:   TypeTrust,
+		Files: []ManifestFile{{
+			Name: NameCABundle, Role: RoleCACertificate, SHA256: hash(certificate),
+			Encoding: EncodingBase64, Data: base64.StdEncoding.EncodeToString(certificate),
 		}},
 	}
-	return manifest, ContentDigest(map[string][]byte{
-		certificateName: certificate,
-		privateKeyName:  privateKey,
-	})
+	return manifest, ManifestDigest(manifest, map[string][]byte{NameCABundle: certificate})
 }
 
 // Encode validates and serializes one complete bundle value.
 func Encode(manifest Manifest) ([]byte, error) {
-	if err := manifest.Validate(); err != nil {
+	_, err := decodeManifestFiles(manifest)
+	if err != nil {
 		return nil, err
 	}
 	data, err := json.Marshal(manifest)
@@ -106,22 +126,11 @@ func Decode(data []byte) (Manifest, map[string][]byte, string, error) {
 	if err := json.Unmarshal(data, &manifest, json.RejectUnknownMembers(true)); err != nil {
 		return Manifest{}, nil, "", fmt.Errorf("decode bundle: %w", err)
 	}
-	if err := manifest.Validate(); err != nil {
+	files, err := decodeManifestFiles(manifest)
+	if err != nil {
 		return Manifest{}, nil, "", err
 	}
-
-	files := make(map[string][]byte, len(manifest.Files))
-	for _, declared := range manifest.Files {
-		content, err := base64.StdEncoding.DecodeString(declared.Data)
-		if err != nil {
-			return Manifest{}, nil, "", fmt.Errorf("bundle file %q has invalid base64 data", declared.Name)
-		}
-		if hash(content) != declared.SHA256 {
-			return Manifest{}, nil, "", fmt.Errorf("bundle file %q sha256 mismatch", declared.Name)
-		}
-		files[declared.Name] = content
-	}
-	return manifest, files, ContentDigest(files), nil
+	return manifest, files, ManifestDigest(manifest, files), nil
 }
 
 // ParseManifest strictly parses and structurally validates a manifest without decoding inline data.
@@ -141,30 +150,29 @@ func ParseManifest(data []byte) (Manifest, error) {
 
 // Validate checks manifest structure and metadata without decoding file data.
 func (m Manifest) Validate() error {
-	if m.Schema != SchemaV5 {
+	if m.Schema != SchemaV6 {
 		return fmt.Errorf("unsupported manifest schema %q", m.Schema)
 	}
-	if len(m.Files) == 0 {
-		return fmt.Errorf("manifest files are required")
+	expected, ok := expectedFiles(m.Type)
+	if !ok {
+		return fmt.Errorf("unsupported bundle type %q", m.Type)
 	}
-	if len(m.Pairs) == 0 {
-		return fmt.Errorf("manifest certificate pairs are required")
+	if len(m.Files) != len(expected) {
+		return fmt.Errorf("bundle type %q requires exactly %d files", m.Type, len(expected))
 	}
 
-	files := make(map[string]struct{}, len(m.Files))
-	kinds := make(map[string]string, len(m.Files))
+	seen := make(map[string]string, len(m.Files))
 	for index, file := range m.Files {
 		if !SafeName(file.Name) {
 			return fmt.Errorf("manifest files[%d] has unsafe name %q", index, file.Name)
 		}
-		if _, exists := files[file.Name]; exists {
+		if _, exists := seen[file.Name]; exists {
 			return fmt.Errorf("manifest file %q is duplicated", file.Name)
 		}
-		files[file.Name] = struct{}{}
-		if file.Kind != KindCertificate && file.Kind != KindPrivateKey {
-			return fmt.Errorf("manifest files[%d] has invalid kind %q", index, file.Kind)
+		if file.Role != expected[file.Name] {
+			return fmt.Errorf("manifest file %q has invalid role %q for bundle type %q", file.Name, file.Role, m.Type)
 		}
-		kinds[file.Name] = file.Kind
+		seen[file.Name] = file.Role
 		digest, err := hex.DecodeString(file.SHA256)
 		if err != nil || len(digest) != sha256.Size || file.SHA256 != strings.ToLower(file.SHA256) {
 			return fmt.Errorf("manifest file %q has invalid sha256", file.Name)
@@ -173,36 +181,47 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("manifest file %q has unsupported encoding %q", file.Name, file.Encoding)
 		}
 	}
-	for index, pair := range m.Pairs {
-		if _, ok := files[pair.Certificate]; !ok {
-			return fmt.Errorf("manifest pairs[%d] references unknown certificate %q", index, pair.Certificate)
-		}
-		if _, ok := files[pair.PrivateKey]; !ok {
-			return fmt.Errorf("manifest pairs[%d] references unknown private key %q", index, pair.PrivateKey)
-		}
-		if kinds[pair.Certificate] != KindCertificate || kinds[pair.PrivateKey] != KindPrivateKey {
-			return fmt.Errorf("manifest pairs[%d] has mismatched file kinds", index)
-		}
-	}
 	return nil
 }
 
-// HasPair reports whether the manifest declares the selected certificate pair.
-func (m Manifest) HasPair(certificate, privateKey string) bool {
-	for _, pair := range m.Pairs {
-		if pair.Certificate == certificate && pair.PrivateKey == privateKey {
-			return true
+// ValidateFiles verifies decoded bytes against the bundle's semantic type.
+func (m Manifest) ValidateFiles(files map[string][]byte) ([]*x509.Certificate, *x509.Certificate, error) {
+	if err := m.Validate(); err != nil {
+		return nil, nil, err
+	}
+	if len(files) != len(m.Files) {
+		return nil, nil, fmt.Errorf("decoded file set does not match manifest")
+	}
+	for _, declared := range m.Files {
+		content, ok := files[declared.Name]
+		if !ok || hash(content) != declared.SHA256 {
+			return nil, nil, fmt.Errorf("decoded file %q does not match manifest", declared.Name)
 		}
 	}
-	return false
+
+	switch m.Type {
+	case TypeTLSServer, TypeTLSClient:
+		return validateIdentity(m.Type, files[NameCertificateChain], files[NamePrivateKey])
+	case TypeTrust:
+		certificates, err := validateTrust(files[NameCABundle])
+		return certificates, nil, err
+	default:
+		return nil, nil, fmt.Errorf("unsupported bundle type %q", m.Type)
+	}
 }
 
-// ContentDigest computes the protocol digest over sorted raw file names and raw-content SHA-256 values.
-func ContentDigest(files map[string][]byte) string {
+// ManifestDigest computes the semantic protocol digest over bundle type and each file's name, role, and raw content.
+func ManifestDigest(manifest Manifest, files map[string][]byte) string {
 	hasher := sha256.New()
-	_, _ = hasher.Write([]byte(SchemaV5))
+	_, _ = hasher.Write([]byte(manifest.Schema))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(manifest.Type))
 	_, _ = hasher.Write([]byte{0})
 
+	declarations := make(map[string]string, len(manifest.Files))
+	for _, file := range manifest.Files {
+		declarations[file.Name] = file.Role
+	}
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
@@ -211,6 +230,8 @@ func ContentDigest(files map[string][]byte) string {
 	for _, name := range names {
 		sum := sha256.Sum256(files[name])
 		_, _ = hasher.Write([]byte(name))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write([]byte(declarations[name]))
 		_, _ = hasher.Write([]byte{0})
 		_, _ = hasher.Write(sum[:])
 	}
@@ -228,6 +249,176 @@ func ValidateGeneration(generation, digest string) error {
 		return fmt.Errorf("generation %q does not match bundle digest %q", generation, digest)
 	}
 	return nil
+}
+
+func decodeManifestFiles(manifest Manifest) (map[string][]byte, error) {
+	if err := manifest.Validate(); err != nil {
+		return nil, err
+	}
+	files := make(map[string][]byte, len(manifest.Files))
+	for _, declared := range manifest.Files {
+		content, err := base64.StdEncoding.DecodeString(declared.Data)
+		if err != nil {
+			return nil, fmt.Errorf("bundle file %q has invalid base64 data", declared.Name)
+		}
+		if hash(content) != declared.SHA256 {
+			return nil, fmt.Errorf("bundle file %q sha256 mismatch", declared.Name)
+		}
+		files[declared.Name] = content
+	}
+	if _, _, err := manifest.ValidateFiles(files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func expectedFiles(bundleType string) (map[string]string, bool) {
+	switch bundleType {
+	case TypeTLSServer, TypeTLSClient:
+		return map[string]string{
+			NameCertificateChain: RoleCertificateChain,
+			NamePrivateKey:       RolePrivateKey,
+		}, true
+	case TypeTrust:
+		return map[string]string{NameCABundle: RoleCACertificate}, true
+	default:
+		return nil, false
+	}
+}
+
+func validateIdentity(bundleType string, certificatePEM, privateKeyPEM []byte) ([]*x509.Certificate, *x509.Certificate, error) {
+	certificates, err := parseCertificates(certificatePEM)
+	if err != nil {
+		return nil, nil, fmt.Errorf("certificate chain: %w", err)
+	}
+	leaf := certificates[0]
+	if leaf.IsCA {
+		return nil, nil, fmt.Errorf("certificate chain leaf is a CA certificate")
+	}
+	for index := 1; index < len(certificates); index++ {
+		if !certificates[index].IsCA {
+			return nil, nil, fmt.Errorf("certificate chain position %d is not a CA certificate", index)
+		}
+	}
+	for index := 0; index+1 < len(certificates); index++ {
+		if err := certificates[index].CheckSignatureFrom(certificates[index+1]); err != nil {
+			return nil, nil, fmt.Errorf("certificate chain position %d is not signed by position %d", index, index+1)
+		}
+	}
+
+	normalizedKey, err := normalizePrivateKey(privateKeyPEM)
+	if err != nil {
+		return nil, nil, err
+	}
+	pair, err := tls.X509KeyPair(certificatePEM, normalizedKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse TLS key pair: %w", err)
+	}
+	if pair.Leaf == nil || !pair.Leaf.Equal(leaf) {
+		return nil, nil, fmt.Errorf("TLS leaf does not match parsed certificate chain")
+	}
+	if err := validatePublicKey(leaf.PublicKey); err != nil {
+		return nil, nil, err
+	}
+
+	var wanted x509.ExtKeyUsage
+	switch bundleType {
+	case TypeTLSServer:
+		wanted = x509.ExtKeyUsageServerAuth
+	case TypeTLSClient:
+		wanted = x509.ExtKeyUsageClientAuth
+	}
+	if len(leaf.ExtKeyUsage) > 0 && !containsKeyUsage(leaf.ExtKeyUsage, wanted) {
+		return nil, nil, fmt.Errorf("certificate leaf does not permit %s usage", bundleType)
+	}
+	return certificates, leaf, nil
+}
+
+func validateTrust(certificatePEM []byte) ([]*x509.Certificate, error) {
+	certificates, err := parseCertificates(certificatePEM)
+	if err != nil {
+		return nil, fmt.Errorf("CA bundle: %w", err)
+	}
+	for index, certificate := range certificates {
+		if !certificate.IsCA {
+			return nil, fmt.Errorf("CA bundle certificate %d is not a CA certificate", index)
+		}
+	}
+	return certificates, nil
+}
+
+func parseCertificates(data []byte) ([]*x509.Certificate, error) {
+	rest := data
+	certificates := []*x509.Certificate{}
+	for {
+		block, remainder := pem.Decode(rest)
+		if block == nil {
+			if strings.TrimSpace(string(rest)) != "" {
+				return nil, fmt.Errorf("contains non-PEM certificate data")
+			}
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("contains %q PEM block", block.Type)
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse PEM certificate: %w", err)
+		}
+		certificates = append(certificates, certificate)
+		rest = remainder
+	}
+	if len(certificates) == 0 {
+		return nil, fmt.Errorf("contains no certificates")
+	}
+	return certificates, nil
+}
+
+func normalizePrivateKey(data []byte) ([]byte, error) {
+	block, rest := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("private key contains no PEM data")
+	}
+	if block.Type != "PRIVATE KEY" && !strings.HasSuffix(block.Type, " PRIVATE KEY") {
+		return nil, fmt.Errorf("private key contains invalid PEM block type %q", block.Type)
+	}
+	if strings.TrimSpace(string(rest)) != "" {
+		return nil, fmt.Errorf("private key contains multiple PEM blocks or trailing data")
+	}
+	for name := range block.Headers {
+		if name == "Proc-Type" || name == "DEK-Info" {
+			return nil, fmt.Errorf("encrypted private keys are not supported")
+		}
+	}
+	return pem.EncodeToMemory(block), nil
+}
+
+func validatePublicKey(public any) error {
+	switch key := public.(type) {
+	case *rsa.PublicKey:
+		if key.N.BitLen() < 2048 {
+			return fmt.Errorf("RSA public key is shorter than 2048 bits")
+		}
+	case *ecdsa.PublicKey:
+		switch key.Curve {
+		case elliptic.P256(), elliptic.P384(), elliptic.P521():
+		default:
+			return fmt.Errorf("unsupported ECDSA curve %q", key.Curve)
+		}
+	case ed25519.PublicKey:
+	default:
+		return fmt.Errorf("unsupported public key type %T", public)
+	}
+	return nil
+}
+
+func containsKeyUsage(usages []x509.ExtKeyUsage, wanted x509.ExtKeyUsage) bool {
+	for _, usage := range usages {
+		if usage == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func hash(value []byte) string {

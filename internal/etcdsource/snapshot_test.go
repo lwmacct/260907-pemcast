@@ -1,6 +1,12 @@
 package etcdsource
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"testing"
 	"time"
 
@@ -14,9 +20,8 @@ import (
 )
 
 func TestMaterialFromValueDecodesAndValidatesGeneration(t *testing.T) {
-	certificate := []byte("certificate")
-	privateKey := []byte("private-key")
-	manifest, digest := bundle.NewTLSManifest(certificate, privateKey, "fullchain.pem", "privkey.pem")
+	certificate, privateKey := testKeyPair(t)
+	manifest, digest := bundle.NewTLSManifest(bundle.TypeTLSServer, certificate, privateKey)
 	encoded, err := bundle.Encode(manifest)
 	require.NoError(t, err)
 
@@ -27,12 +32,13 @@ func TestMaterialFromValueDecodesAndValidatesGeneration(t *testing.T) {
 	require.Equal(t, generation, material.Generation)
 	require.Equal(t, int64(42), material.Revision)
 	require.Equal(t, digest, material.Digest)
-	require.Equal(t, certificate, material.Files["fullchain.pem"])
-	require.Equal(t, privateKey, material.Files["privkey.pem"])
+	require.Equal(t, certificate, material.Files[bundle.NameCertificateChain])
+	require.Equal(t, privateKey, material.Files[bundle.NamePrivateKey])
 }
 
 func TestMaterialFromValueRejectsPointerDigestMismatch(t *testing.T) {
-	manifest, _ := bundle.NewTLSManifest([]byte("certificate"), []byte("private-key"), "fullchain.pem", "privkey.pem")
+	certificate, privateKey := testKeyPair(t)
+	manifest, _ := bundle.NewTLSManifest(bundle.TypeTLSServer, certificate, privateKey)
 	encoded, err := bundle.Encode(manifest)
 	require.NoError(t, err)
 
@@ -45,17 +51,17 @@ func TestMaterialFromValueRejectsMalformedBundle(t *testing.T) {
 	require.ErrorContains(t, err, "decode bundle")
 }
 
-func TestProtocolKeysUseKindFirstV5Root(t *testing.T) {
+func TestProtocolKeysUseV6Root(t *testing.T) {
 	client := newClient(nil, time.Second)
-	require.Equal(t, "/v5", ProtocolRoot)
+	require.Equal(t, "/v6", ProtocolRoot)
 	require.Equal(t, "/pemcast", client.Prefix())
-	require.Equal(t, "/pemcast/v5/active/", client.ActivePrefix())
-	require.Equal(t, "/pemcast/v5/active/nginx", client.ActiveKey("nginx"))
-	require.Equal(t, "/pemcast/v5/bundles/", client.BundlePrefix())
-	require.Equal(t, "/pemcast/v5/bundles/nginx/", client.TargetBundlePrefix("nginx"))
+	require.Equal(t, "/pemcast/v6/active/", client.ActivePrefix())
+	require.Equal(t, "/pemcast/v6/active/nginx", client.ActiveKey("nginx"))
+	require.Equal(t, "/pemcast/v6/bundles/", client.BundlePrefix())
+	require.Equal(t, "/pemcast/v6/bundles/nginx/", client.TargetBundlePrefix("nginx"))
 	require.Equal(
 		t,
-		"/pemcast/v5/bundles/nginx/sha256-value",
+		"/pemcast/v6/bundles/nginx/sha256-value",
 		client.BundleKey("nginx", "sha256-value"),
 	)
 
@@ -63,12 +69,31 @@ func TestProtocolKeysUseKindFirstV5Root(t *testing.T) {
 	require.NoError(t, err)
 	client.keys = customKeys
 	require.Equal(t, "/tenants/example", client.Prefix())
-	require.Equal(t, "/tenants/example/v5/active/nginx", client.ActiveKey("nginx"))
+	require.Equal(t, "/tenants/example/v6/active/nginx", client.ActiveKey("nginx"))
 	require.Equal(
 		t,
-		"/tenants/example/v5/bundles/nginx/sha256-value",
+		"/tenants/example/v6/bundles/nginx/sha256-value",
 		client.BundleKey("nginx", "sha256-value"),
 	)
+}
+
+func testKeyPair(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "etcdsource-test"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(private)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 }
 
 func TestSnapshotFromResponseKeepsAllTargetsAtOneRevision(t *testing.T) {

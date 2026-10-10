@@ -16,6 +16,7 @@ import (
 	publishcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/publish"
 	statuscmd "github.com/lwmacct/260907-pemcast/internal/appcmd/status"
 	toolscmd "github.com/lwmacct/260907-pemcast/internal/appcmd/tools"
+	upgradecmd "github.com/lwmacct/260907-pemcast/internal/appcmd/upgrade"
 	"github.com/lwmacct/260907-pemcast/internal/config"
 )
 
@@ -28,7 +29,7 @@ func main() {
 		Version: version.AppVersion,
 		Commands: []*cli.Command{
 			agentcmd.Command, configcmd.Command, publishcmd.Command,
-			statuscmd.Command, toolscmd.Command, version.Command,
+			statuscmd.Command, toolscmd.Command, upgradecmd.Command, version.Command,
 		},
 	}
 	config.Manager.MustConfigure(app)

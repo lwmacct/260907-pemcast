@@ -100,6 +100,31 @@ func TestEtcdUserTemplateFallback(t *testing.T) {
 	}
 }
 
+func TestUpgradeEtcdUserTemplateFallback(t *testing.T) {
+	t.Setenv("ETCDCTL_USER", "fallback:fallback-secret")
+	t.Setenv("ETCDCTL_USER_PUBLISH", "publish:publish-secret")
+	t.Setenv("ETCDCTL_USER_UPGRADE", "upgrade:upgrade-secret")
+
+	user, err := ExpandEtcdUser(t.Context(), UpgradeEtcdUserTemplate)
+	if err != nil {
+		t.Fatalf("load dedicated upgrade credential: %v", err)
+	}
+	if got := user; got != "upgrade:upgrade-secret" {
+		t.Fatalf("UpgradeEtcdUserTemplate() = %q, want dedicated upgrade credential", got)
+	}
+
+	if err := os.Unsetenv("ETCDCTL_USER_UPGRADE"); err != nil {
+		t.Fatalf("unset dedicated upgrade credential: %v", err)
+	}
+	user, err = ExpandEtcdUser(t.Context(), UpgradeEtcdUserTemplate)
+	if err != nil {
+		t.Fatalf("load publisher fallback: %v", err)
+	}
+	if got := user; got != "publish:publish-secret" {
+		t.Fatalf("UpgradeEtcdUserTemplate() = %q, want publisher fallback", got)
+	}
+}
+
 func TestExampleConfigHasRepresentativeTarget(t *testing.T) {
 	got := ExampleConfig().Agent.Targets
 	if len(got) != 1 || got[0].ID != "nginx" {

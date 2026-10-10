@@ -8,9 +8,9 @@ import (
 	seedcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/tools/seed"
 )
 
-// Command groups offline v5 bundle construction and local seeding utilities.
+// Command groups offline v6 bundle construction and local seeding utilities.
 var Command = &cli.Command{
 	Name:     "tools",
-	Usage:    "local offline certificate and release utilities",
+	Usage:    "local offline v6 certificate and release utilities",
 	Commands: []*cli.Command{packcmd.Command, seedcmd.Command},
 }

@@ -19,25 +19,31 @@ PEMCAST_AGENT_TARGETS='[{"id":"nginx",...}]'
 
 scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
-配置 etcd 访问, 每个消费者一个 target, output root, 安全 mappings, validation pair 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
+配置 etcd 访问, 每个消费者一个 target type, output root, 安全 mappings, validation policy 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
+
+## 常用 target type
+
+- `tls-server`: 分发 leaf certificate, intermediate chain 和 private key, 用于 Nginx, Envoy, HAProxy, etcd server 或其他 HTTPS/gRPC 服务端身份.
+- `tls-client`: 分发同一个 identity 形态但按 clientAuth 用途校验, 用于 etcd client mTLS, 数据库 mTLS 或服务间 mTLS.
+- `trust`: 分发只含 CA certificates 的 `ca-bundle.pem`, 用于应用信任内部 CA; 它没有私钥, 也不能替代 `agent.etcd.tls.ca-file` 解决 pemcast 自身连接 etcd 的 bootstrap 信任.
 
 ## etcd prefix, 租户和 RBAC 授权
 
-etcd namespace prefix 默认是 `/pemcast`, agent 可以通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 修改, pack CLI 使用 `--etcd-prefix`. 程序只硬编码 `/v5/active|bundles` 子协议. 以 target `nginx` 为例:
+etcd namespace prefix 默认是 `/pemcast`, agent 可以通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 修改, pack CLI 使用 `--etcd-prefix`. 程序只硬编码 `/v6/active|bundles` 子协议. 以 target `nginx` 为例:
 
 ```text
-/pemcast/v5/active/nginx
-/pemcast/v5/bundles/nginx/<generation>
+/pemcast/v6/active/nginx
+/pemcast/v6/bundles/nginx/<generation>
 ```
 
 `etcd-prefix` 可以作为多租户或多环境的 namespace 边界. 例如租户 `example` 使用 `/pemcast/tenants/example`, 租户 `demo` 使用 `/pemcast/tenants/demo`:
 
 ```text
-/pemcast/tenants/example/v5/active/nginx
-/pemcast/tenants/demo/v5/active/nginx
+/pemcast/tenants/example/v6/active/nginx
+/pemcast/tenants/demo/v6/active/nginx
 ```
 
-两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v5` 协议语义.
+两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v6` 协议语义.
 
 当前生产使用 broad prefix RBAC. `agent` role 对整个 namespace prefix 只读, `publish` role 对整个 namespace prefix 读写:
 
@@ -46,7 +52,7 @@ agent   read        /pemcast/ --prefix
 publish readwrite   /pemcast/ --prefix
 ```
 
-这个模式允许后续新增 target 或协议版本时不需要同步修改 etcd RBAC. agent 可以读取同一 prefix 下全部私钥 bundle, 因此该 prefix 内的 agent 与 publisher 都属于同一个信任边界. agent 仍然没有写权限. publisher user 供 `pemcast publish` 使用, 读取 active pointer 和 bundle, stage 新 bundle, 并 CAS 切换 pointer. root 只用于认证和用户管理, 不进入 pemcast 配置.
+这个模式允许后续新增 target 或协议版本时不需要同步修改 etcd RBAC. agent 可以读取同一 prefix 下全部 identity bundle 私钥, 因此这个 prefix 内的 agent 与 publisher 都属于同一个信任边界. agent 仍然没有写权限. publisher user 供 `pemcast publish` 使用, 读取 active pointer 和 bundle, stage 新 bundle, 并 CAS 切换 pointer. root 只用于认证和用户管理, 不进入 pemcast 配置.
 
 使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent user, publisher user 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
 
@@ -71,10 +77,10 @@ broad 模式会验证授权 active/bundle 可读, publisher 可写 bundle probe,
 如果要把私钥 bundle 按 target 隔离, 可以省略 `--broad` 使用 target 级模式:
 
 ```text
-agent-active:/pemcast/v5        read        /pemcast/v5/active/ --prefix
-agent-bundles:/pemcast/v5:nginx read        /pemcast/v5/bundles/nginx/ --prefix
-publisher:/pemcast/v5:nginx     readwrite   /pemcast/v5/active/nginx
-publisher:/pemcast/v5:nginx     readwrite   /pemcast/v5/bundles/nginx/ --prefix
+agent-active:/pemcast/v6        read        /pemcast/v6/active/ --prefix
+agent-bundles:/pemcast/v6:nginx read        /pemcast/v6/bundles/nginx/ --prefix
+publisher:/pemcast/v6:nginx     readwrite   /pemcast/v6/active/nginx
+publisher:/pemcast/v6:nginx     readwrite   /pemcast/v6/bundles/nginx/ --prefix
 ```
 
 target 级模式适合多个互不信任的 consumer 组; 每新增 target 都需要同步追加 role. 当前生产不使用该模式.
@@ -89,9 +95,41 @@ agent:
     prefix: /pemcast
 ```
 
-发布端复用 `agent.etcd` 配置. `pemcast tools pack` 使用 `--etcd-prefix`, `pemcast publish` 使用 `agent.etcd.prefix` 与同一组 etcd endpoint 和 TLS 配置. etcd 认证统一为 `username:password`; agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
+发布端复用 `agent.etcd` 配置. `pemcast tools pack` 使用 `--etcd-prefix`, `pemcast publish` 使用 `agent.etcd.prefix` 与同一组 etcd endpoint 和 TLS 配置. etcd 认证统一为 `username:password`; agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`, upgrade 依次读取 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
 
 使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcd.tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcd.tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
+
+pemcast 自身连接 etcd 使用的 CA 必须先存在于本地受管配置中; 不要试图通过 `trust` target 分发这份 bootstrap CA, 否则 agent 在获得新 CA 前已经无法连接旧 etcd 或新 etcd.
+
+## v5 到 v6 upgrade
+
+`pemcast upgrade` 是在线 prefix 迁移命令, 只支持 canonical v5 active bundle 到 v6. 它需要读取 `<prefix>/v5/` 和 `<prefix>/v6/`, 写入 `<prefix>/v6/`; 如需清理还必须能删除 `<prefix>/v5/`. etcd root 或 broad namespace readwrite user 都可以使用, 推荐用专用 `ETCDCTL_USER_UPGRADE`.
+
+先 dry-run 并显式声明 type:
+
+```bash
+PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
+PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
+ETCDCTL_USER_UPGRADE='upgrade-admin:<password>' \
+pemcast upgrade \
+  --default-type tls-server \
+  --target-type etcd-client=tls-client \
+  --dry-run
+```
+
+执行时去掉 `--dry-run`. 命令会 snapshot 两个 active prefix, 按同一个 v5 revision exact-key 读取 active bundle, 用 v5 historical digest 验证 source, 按声明 type 重建 v6 semantic digest, stage destination bundle, 并在 source v5 pointer value + ModRevision 未变化时 CAS destination pointer. v6 active 已存在但不是本次结果时拒绝, 避免 mixed state.
+
+默认保留 `/pemcast/v5/`. 只有全部 target postverify 通过且旧 v5 publisher 已停止或禁用后, 才执行:
+
+```bash
+pemcast upgrade \
+  --default-type tls-server \
+  --target-type etcd-client=tls-client \
+  --delete-old-v5 \
+  --yes
+```
+
+删除范围精确是 `<prefix>/v5/`. 仍在 watch v5 的旧 agent 会收到 active delete event; `retain` 保留本地 release, `fail` 报错. 它们不会自动切换到 v6. 不要在旧 publisher 仍可能写入时删除 v5, 否则可能出现协议分叉.
 
 ## 校验与启动
 

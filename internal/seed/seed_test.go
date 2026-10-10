@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/lwmacct/260907-pemcast/internal/bundle"
 	"github.com/lwmacct/260907-pemcast/internal/config"
 	"github.com/lwmacct/260907-pemcast/internal/deploy"
 	"github.com/lwmacct/260907-pemcast/internal/pack"
@@ -59,6 +60,22 @@ func TestApplyRequiresForceForDifferentGeneration(t *testing.T) {
 	require.DirExists(t, filepath.Join(root, ".pemcast", "releases", "sha256-"+first.Metadata.BundleSHA256))
 }
 
+func TestApplySeedsTrustBundle(t *testing.T) {
+	root := t.TempDir()
+	target := testTarget(root, 0)
+	target.Type = bundle.TypeTrust
+	target.Output.Mappings = []config.FileMapping{
+		{Remote: bundle.NameCABundle, Local: "ca-bundle.pem", Mode: config.FileMode("0644")},
+	}
+	result := buildTrustPack(t, target.ID)
+
+	seeded, err := Apply(Options{Target: target, Pack: result, Prefix: "/pemcast", Now: time.Now()}, deploy.New())
+	require.NoError(t, err)
+	require.True(t, seeded.Changed)
+	require.FileExists(t, filepath.Join(root, "current", bundle.NameCABundle))
+	require.NoFileExists(t, filepath.Join(root, "current", bundle.NamePrivateKey))
+}
+
 func TestApplyRejectsTargetPrefixAndValidityMismatch(t *testing.T) {
 	root := t.TempDir()
 	target := testTarget(root, time.Hour)
@@ -78,7 +95,7 @@ func TestApplyRejectsTargetPrefixAndValidityMismatch(t *testing.T) {
 
 func testTarget(root string, minimumValidity time.Duration) config.Target {
 	return config.Target{
-		ID: "nginx", DeletePolicy: "retain",
+		ID: "nginx", Type: bundle.TypeTLSServer, DeletePolicy: "retain",
 		Output: config.Output{
 			Root: root, CurrentLink: "current", RetainReleases: 3, DirectoryMode: config.FileMode("0700"),
 			Mappings: []config.FileMapping{
@@ -87,7 +104,6 @@ func testTarget(root string, minimumValidity time.Duration) config.Target {
 			},
 		},
 		Validation: config.Validation{
-			Certificate: "fullchain.pem", PrivateKey: "privkey.pem",
 			RejectExpired: true, MinimumValidity: minimumValidity,
 		},
 	}
@@ -98,8 +114,20 @@ func buildPack(t *testing.T, targetID string, lifetime time.Duration) pack.Resul
 
 	certificatePath, privateKeyPath := writeKeyPair(t, targetID, lifetime)
 	result, err := pack.Build(pack.Options{
+		Type:     "tls-server",
 		TargetID: targetID, EtcdPrefix: "/pemcast",
 		CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
+	})
+	require.NoError(t, err)
+	return result
+}
+
+func buildTrustPack(t *testing.T, targetID string) pack.Result {
+	t.Helper()
+
+	caPath := writeCACertificate(t)
+	result, err := pack.Build(pack.Options{
+		Type: bundle.TypeTrust, TargetID: targetID, EtcdPrefix: "/pemcast", CAPath: caPath,
 	})
 	require.NoError(t, err)
 	return result
@@ -127,4 +155,24 @@ func writeKeyPair(t *testing.T, commonName string, lifetime time.Duration) (stri
 	require.NoError(t, os.WriteFile(certificatePath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), 0o600))
 	require.NoError(t, os.WriteFile(privateKeyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
 	return certificatePath, privateKeyPath
+}
+
+func writeCACertificate(t *testing.T) string {
+	t.Helper()
+
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "seed-test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), bundle.NameCABundle)
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+	return path
 }

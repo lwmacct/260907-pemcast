@@ -1,4 +1,4 @@
-// Package etcdsource reads immutable pemcast v5 bundles and active pointers from etcd.
+// Package etcdsource reads immutable pemcast v6 bundles and active pointers from etcd.
 package etcdsource
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
-// ProtocolRoot is the fixed kind-first protocol root below the configured etcd prefix.
+// ProtocolRoot is the fixed v6 protocol root below the configured etcd prefix.
 const ProtocolRoot = keyspace.ProtocolRoot
 
 // DefaultPrefix is the default configurable etcd namespace prefix.

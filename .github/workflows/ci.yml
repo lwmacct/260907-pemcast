@@ -75,3 +75,4 @@ jobs:
         run: |
           bash scripts/integration-etcd.sh
           bash scripts/integration-etcd-seed.sh
+          bash scripts/integration-etcd-upgrade.sh

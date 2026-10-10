@@ -1,4 +1,4 @@
-// Package pack builds local immutable v5 certificate bundles and etcdctl input.
+// Package pack builds local immutable v6 certificate bundles and etcdctl input.
 package pack
 
 import (
@@ -15,24 +15,22 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 )
 
-const MetadataSchema = "pemcast-pack/v5"
-
-const (
-	certificateName = "fullchain.pem"
-	privateKeyName  = "privkey.pem"
-)
+const MetadataSchema = "pemcast-pack/v6"
 
 // Options describes one local packing operation. Packing never contacts etcd.
 type Options struct {
+	Type            string
 	TargetID        string
 	EtcdPrefix      string
 	CertificatePath string
 	PrivateKeyPath  string
+	CAPath          string
 }
 
 // Metadata describes a packed bundle without exposing its private key.
 type Metadata struct {
 	Schema            string                  `json:"schema"`
+	Type              string                  `json:"type"`
 	EtcdPrefix        string                  `json:"etcd-prefix"`
 	TargetID          string                  `json:"target-id"`
 	Generation        string                  `json:"generation"`
@@ -44,9 +42,9 @@ type Metadata struct {
 	Files             map[string]MetadataFile `json:"files"`
 }
 
-// MetadataFile names one source file kind and raw-content digest.
+// MetadataFile names one source file role and raw-content digest.
 type MetadataFile struct {
-	Kind   string `json:"kind"`
+	Role   string `json:"role"`
 	SHA256 string `json:"sha256"`
 }
 
@@ -57,7 +55,7 @@ type Result struct {
 	StageTxn []byte
 }
 
-// Build validates local TLS material and derives every remote v5 artifact.
+// Build validates local certificate material and derives every remote v6 artifact.
 func Build(options Options) (Result, error) {
 	if !bundle.SafeName(options.TargetID) {
 		return Result{}, fmt.Errorf("target id %q is unsafe", options.TargetID)
@@ -67,19 +65,29 @@ func Build(options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	certificate, err := readFile(options.CertificatePath)
-	if err != nil {
-		return Result{}, fmt.Errorf("read certificate: %w", err)
-	}
-	privateKey, err := readFile(options.PrivateKeyPath)
-	if err != nil {
-		return Result{}, fmt.Errorf("read private key: %w", err)
-	}
-	if _, err := bundle.ValidateKeyPair(certificate, privateKey); err != nil {
-		return Result{}, err
+	var manifest bundle.Manifest
+	var digest string
+	switch options.Type {
+	case bundle.TypeTLSServer, bundle.TypeTLSClient:
+		certificate, err := readFile(options.CertificatePath)
+		if err != nil {
+			return Result{}, fmt.Errorf("read certificate: %w", err)
+		}
+		privateKey, err := readFile(options.PrivateKeyPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("read private key: %w", err)
+		}
+		manifest, digest = bundle.NewTLSManifest(options.Type, certificate, privateKey)
+	case bundle.TypeTrust:
+		certificate, err := readFile(options.CAPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("read CA bundle: %w", err)
+		}
+		manifest, digest = bundle.NewTrustManifest(certificate)
+	default:
+		return Result{}, fmt.Errorf("unsupported certificate bundle type %q", options.Type)
 	}
 
-	manifest, digest := bundle.NewTLSManifest(certificate, privateKey, certificateName, privateKeyName)
 	encoded, err := bundle.Encode(manifest)
 	if err != nil {
 		return Result{}, err
@@ -87,6 +95,7 @@ func Build(options Options) (Result, error) {
 	generation := bundle.Generation(digest)
 	metadata := Metadata{
 		Schema:            MetadataSchema,
+		Type:              options.Type,
 		EtcdPrefix:        keys.Prefix(),
 		TargetID:          options.TargetID,
 		Generation:        generation,
@@ -95,10 +104,7 @@ func Build(options Options) (Result, error) {
 		EncodedSize:       len(encoded),
 		ActiveKey:         keys.ActiveKey(options.TargetID),
 		BundleKey:         keys.BundleKey(options.TargetID, generation),
-		Files: map[string]MetadataFile{
-			certificateName: {Kind: bundle.KindCertificate, SHA256: hash(certificate)},
-			privateKeyName:  {Kind: bundle.KindPrivateKey, SHA256: hash(privateKey)},
-		},
+		Files:             metadataFiles(manifest),
 	}
 	return Result{
 		Metadata: metadata,
@@ -172,30 +178,26 @@ func Validate(result Result) error {
 	if metadata.BundleKey != expectedBundleKey {
 		return fmt.Errorf("pack bundle key %q does not match expected %q", metadata.BundleKey, expectedBundleKey)
 	}
-	if len(files) != 2 || len(manifest.Files) != 2 || len(manifest.Pairs) != 1 || len(metadata.Files) != 2 {
-		return fmt.Errorf("pack must contain exactly one certificate/private-key pair")
+	if metadata.Type != manifest.Type {
+		return fmt.Errorf("pack metadata type %q does not match bundle type %q", metadata.Type, manifest.Type)
 	}
-	if _, ok := files[certificateName]; !ok {
-		return fmt.Errorf("pack is missing %q", certificateName)
-	}
-	if _, ok := files[privateKeyName]; !ok {
-		return fmt.Errorf("pack is missing %q", privateKeyName)
-	}
-	pair := manifest.Pairs[0]
-	if pair.Certificate != certificateName || pair.PrivateKey != privateKeyName {
-		return fmt.Errorf("pack certificate pair must reference %q and %q", certificateName, privateKeyName)
+
+	expectedRoles := expectedFileRoles(manifest.Type)
+	if expectedRoles == nil || len(files) != len(expectedRoles) ||
+		len(manifest.Files) != len(expectedRoles) || len(metadata.Files) != len(expectedRoles) {
+		return fmt.Errorf("pack type %q has an invalid file set", manifest.Type)
 	}
 	for _, file := range manifest.Files {
 		expected, ok := metadata.Files[file.Name]
 		if !ok {
 			return fmt.Errorf("pack metadata is missing file %q", file.Name)
 		}
-		if expected.Kind != file.Kind || expected.SHA256 != file.SHA256 {
+		if expected.Role != file.Role || expected.SHA256 != file.SHA256 {
 			return fmt.Errorf("pack metadata does not match bundle file %q", file.Name)
 		}
-	}
-	if _, err := bundle.ValidateKeyPair(files[certificateName], files[privateKeyName]); err != nil {
-		return fmt.Errorf("pack TLS pair is invalid: %w", err)
+		if wanted, ok := expectedRoles[file.Name]; !ok || file.Role != wanted {
+			return fmt.Errorf("pack bundle file %q has an invalid role for type %q", file.Name, manifest.Type)
+		}
 	}
 	return nil
 }
@@ -279,19 +281,42 @@ func readFile(path string) ([]byte, error) {
 func writeFile(path string, data []byte, mode os.FileMode) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("create file %q: %w", path, err)
 	}
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("write file %q: %w", path, err)
 	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", filepath.Base(path), err)
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync file %q: %w", path, err)
 	}
-	return nil
+	return file.Close()
 }
 
 func hash(value []byte) string {
 	sum := sha256.Sum256(value)
 	return hex.EncodeToString(sum[:])
+}
+
+func metadataFiles(manifest bundle.Manifest) map[string]MetadataFile {
+	files := make(map[string]MetadataFile, len(manifest.Files))
+	for _, file := range manifest.Files {
+		files[file.Name] = MetadataFile{Role: file.Role, SHA256: file.SHA256}
+	}
+	return files
+}
+
+func expectedFileRoles(bundleType string) map[string]string {
+	switch bundleType {
+	case bundle.TypeTLSServer, bundle.TypeTLSClient:
+		return map[string]string{
+			bundle.NameCertificateChain: bundle.RoleCertificateChain,
+			bundle.NamePrivateKey:       bundle.RolePrivateKey,
+		}
+	case bundle.TypeTrust:
+		return map[string]string{bundle.NameCABundle: bundle.RoleCACertificate}
+	default:
+		return nil
+	}
 }

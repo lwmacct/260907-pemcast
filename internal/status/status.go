@@ -17,6 +17,7 @@ type Report struct {
 
 type TargetStatus struct {
 	ID          string        `json:"id"`
+	Type        string        `json:"type"`
 	OutputRoot  string        `json:"output-root"`
 	CurrentLink string        `json:"current-link"`
 	StateStatus string        `json:"state-status"`
@@ -41,6 +42,7 @@ func Build(cfg config.Config) Report {
 	for _, target := range cfg.Agent.Targets {
 		item := TargetStatus{
 			ID:          target.ID,
+			Type:        target.Type,
 			OutputRoot:  target.Output.Root,
 			CurrentLink: target.Output.CurrentLink,
 			Current:     CurrentStatus{Status: "unknown"},

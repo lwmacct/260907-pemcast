@@ -178,6 +178,7 @@ func packFixtureOne(t *testing.T, target, commonName string) pack.Result {
 
 	certificatePath, privateKeyPath := writeKeyPair(t, commonName)
 	result, err := pack.Build(pack.Options{
+		Type:            "tls-server",
 		TargetID:        target,
 		EtcdPrefix:      "/pemcast",
 		CertificatePath: certificatePath,

@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/lwmacct/260907-pemcast/internal/bundle"
 	"github.com/lwmacct/260907-pemcast/internal/config"
 	"github.com/lwmacct/260907-pemcast/internal/deploy"
@@ -219,20 +221,17 @@ func testMaterial(t *testing.T, digest string) *bundle.Material {
 	t.Helper()
 
 	certificate, privateKey := testCertificatePEM(t)
+	manifest, _ := bundle.NewTLSManifest(bundle.TypeTLSServer, certificate, privateKey)
+	encoded, err := bundle.Encode(manifest)
+	require.NoError(t, err)
+	_, files, _, err := bundle.Decode(encoded)
+	require.NoError(t, err)
+	certificates, leaf, err := manifest.ValidateFiles(files)
+	require.NoError(t, err)
 	return &bundle.Material{
-		TargetID:   "nginx",
-		Generation: "generation-1",
-		Revision:   42,
-		Manifest: bundle.Manifest{
-			Schema: bundle.SchemaV5,
-			Files: []bundle.ManifestFile{
-				{Name: "cert.pem", Kind: "certificate", SHA256: digest},
-				{Name: "key.pem", Kind: "private-key", SHA256: digest},
-			},
-			Pairs: []bundle.Pair{{Certificate: "cert.pem", PrivateKey: "key.pem"}},
-		},
-		Files:  map[string][]byte{"cert.pem": certificate, "key.pem": privateKey},
-		Digest: digest,
+		TargetID: "nginx", Generation: "generation-1", Revision: 42,
+		Manifest: manifest, Files: files, Digest: digest,
+		Certificates: certificates, Leaf: leaf,
 	}
 }
 
@@ -246,16 +245,16 @@ func testAgentConfig(targets ...config.Target) config.Agent {
 func testTarget(id string) config.Target {
 	return config.Target{
 		ID:           id,
+		Type:         bundle.TypeTLSServer,
 		DeletePolicy: "retain",
 		Output: config.Output{
 			Root:        "/tmp/pemcast/" + id,
 			CurrentLink: "current",
 			Mappings: []config.FileMapping{
-				{Remote: "cert.pem", Local: "cert.pem"},
-				{Remote: "key.pem", Local: "key.pem"},
+				{Remote: bundle.NameCertificateChain, Local: "fullchain.pem"},
+				{Remote: bundle.NamePrivateKey, Local: "privkey.pem"},
 			},
 		},
-		Validation: config.Validation{Certificate: "cert.pem", PrivateKey: "key.pem"},
 	}
 }
 
@@ -284,7 +283,7 @@ func TestReconcileFetchFailureDoesNotTouchLocalState(t *testing.T) {
 
 func TestReconcileValidationFailureStopsBeforeState(t *testing.T) {
 	material := testMaterial(t, "digest")
-	material.Files["key.pem"] = material.Files["cert.pem"]
+	material.Manifest.Type = bundle.TypeTrust
 	source := &fakeSource{material: material}
 	deployer := &fakeDeployer{}
 	hooks := &fakeHookRunner{}
@@ -293,7 +292,7 @@ func TestReconcileValidationFailureStopsBeforeState(t *testing.T) {
 
 	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
 	if err == nil {
-		t.Fatal("Reconcile() succeeded with mismatched key pair")
+		t.Fatal("Reconcile() succeeded with mismatched bundle type")
 	}
 	if deployer.count() != 0 || hooks.count() != 0 {
 		t.Fatalf("deploy/hooks ran after validation failure: deploy=%d hooks=%d", deployer.count(), hooks.count())
@@ -371,7 +370,7 @@ func TestReconcileChangedDigestRunsHookAndSavesState(t *testing.T) {
 	if event.TargetID != "nginx" || event.Generation != "generation-1" || event.PreviousGeneration != "" {
 		t.Fatalf("unexpected hook event: %#v", event)
 	}
-	if event.ChangedFiles[0] != "cert.pem" || event.ChangedFiles[1] != "key.pem" {
+	if event.ChangedFiles[0] != "fullchain.pem" || event.ChangedFiles[1] != "privkey.pem" {
 		t.Fatalf("unexpected changed files: %#v", event.ChangedFiles)
 	}
 	got := store.target("nginx")

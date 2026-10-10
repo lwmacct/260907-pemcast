@@ -1,4 +1,4 @@
-// Package seed materializes a validated local v5 pack without contacting etcd.
+// Package seed materializes a validated local v6 pack without contacting etcd.
 package seed
 
 import (
@@ -57,6 +57,12 @@ func Material(options Options) (*bundle.Material, error) {
 			metadata.TargetID, options.Target.ID,
 		)
 	}
+	if metadata.Type != options.Target.Type {
+		return nil, fmt.Errorf(
+			"pack type %q does not match requested target type %q",
+			metadata.Type, options.Target.Type,
+		)
+	}
 
 	manifest, files, digest, err := bundle.Decode(options.Pack.Bundle)
 	if err != nil {
@@ -65,31 +71,21 @@ func Material(options Options) (*bundle.Material, error) {
 	if digest != metadata.BundleSHA256 {
 		return nil, fmt.Errorf("pack bundle digest does not match decoded bundle")
 	}
-	certificate, ok := files[options.Target.Validation.Certificate]
-	if !ok {
-		return nil, fmt.Errorf(
-			"target certificate file %q is absent from the pack",
-			options.Target.Validation.Certificate,
-		)
-	}
-	privateKey, ok := files[options.Target.Validation.PrivateKey]
-	if !ok {
-		return nil, fmt.Errorf(
-			"target private-key file %q is absent from the pack",
-			options.Target.Validation.PrivateKey,
-		)
-	}
-	leaf, err := bundle.ValidateKeyPair(certificate, privateKey)
+	certificates, leaf, err := manifest.ValidateFiles(files)
 	if err != nil {
-		return nil, fmt.Errorf("validate target TLS pair: %w", err)
+		return nil, fmt.Errorf("validate target certificate material: %w", err)
 	}
-	if err := bundle.ValidateValidity(
-		leaf, options.Now, options.Target.Validation.RejectExpired, options.Target.Validation.MinimumValidity,
-	); err != nil {
+	material := &bundle.Material{
+		TargetID: options.Target.ID, Generation: metadata.Generation,
+		Manifest: manifest, Files: files, Digest: digest,
+		Certificates: certificates, Leaf: leaf,
+	}
+	if err := bundle.ValidatePolicy(material, bundle.Policy{
+		Now: options.Now, RejectExpired: options.Target.Validation.RejectExpired,
+		MinimumValidity: options.Target.Validation.MinimumValidity,
+		ServerNames:     options.Target.Validation.ServerNames,
+	}); err != nil {
 		return nil, fmt.Errorf("validate target certificate validity: %w", err)
-	}
-	if !manifest.HasPair(options.Target.Validation.Certificate, options.Target.Validation.PrivateKey) {
-		return nil, fmt.Errorf("target certificate/private-key pair is not declared by the pack manifest")
 	}
 	for _, mapping := range options.Target.Output.Mappings {
 		if _, ok := files[mapping.Remote]; !ok {
@@ -97,10 +93,7 @@ func Material(options Options) (*bundle.Material, error) {
 		}
 	}
 
-	return &bundle.Material{
-		TargetID: options.Target.ID, Generation: metadata.Generation,
-		Manifest: manifest, Files: files, Digest: digest,
-	}, nil
+	return material, nil
 }
 
 // Apply validates a pack against one configured target and activates its local

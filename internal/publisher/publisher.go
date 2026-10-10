@@ -1,4 +1,4 @@
-// Package publisher applies validated local v5 packs to etcd.
+// Package publisher applies validated local v6 packs to etcd.
 package publisher
 
 import (
@@ -18,7 +18,7 @@ const (
 	OutcomeNoOp      Outcome = "no-op"
 )
 
-// KV is the exact etcd surface required by the v5 staged publisher.
+// KV is the exact etcd surface required by the v6 staged publisher.
 type KV interface {
 	Prefix() string
 	ActiveKey(targetID string) string

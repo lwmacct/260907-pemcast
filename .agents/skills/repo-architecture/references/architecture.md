@@ -1,10 +1,10 @@
-# pemcast v5 架构
+# pemcast v6 架构
 
 ## 定位
 
-pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast tools pack` 在本地校验证书并生成 immutable v5 bundle 与 metadata; `pemcast publish` 先 stage bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. agent 只监听 active pointer, 按事件 revision exact-key 读取 bundle, 校验后在本地物化 immutable release 并切换稳定 symlink. 服务重载交给可信 hook.
+pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast tools pack` 在本地校验证书并生成 immutable v6 bundle 与 metadata; `pemcast publish` 先 stage bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. agent 只监听 active pointer, 按事件 revision exact-key 读取 bundle, 校验后在本地物化 immutable release 并切换稳定 symlink. 服务重载交给可信 hook.
 
-仓库不包含 etcd lease manager, service-control integration 或 HTTP API. etcdctl helper 位于 repo-deployment skill, 仅作为手动 fallback; 产品发布路径是单一 `pemcast publish --pack-dir`, 不存在 v4 plan/apply/activate 状态机.
+仓库不包含 etcd lease manager, service-control integration 或 HTTP API. etcdctl helper 位于 repo-deployment skill, 仅作为手动 fallback; 产品发布路径是单一 `pemcast publish --pack-dir`, 不存在 v4 plan/apply/activate 状态机. 顶层 `pemcast upgrade` 只提供 canonical v5 active 数据到 v6 的一次式迁移.
 
 `pemcast tools seed` 可以在首装或显式救援时离线物化同一个 deterministic release, 但不读写远端 pointer 或 agent state.
 
@@ -42,7 +42,7 @@ sequenceDiagram
     A->>C: reconcile target
     C->>E: exact-key get bundle at event revision
     E-->>C: complete JSON bundle
-    C->>C: digest, X509KeyPair 与 validity 校验
+    C->>C: digest, type/role 语义与 validity 校验
     C->>D: Activate(material)
     D->>D: staging, fsync, verify release
     D->>D: 原子切换 current symlink
@@ -51,31 +51,36 @@ sequenceDiagram
     C->>S: 原子保存 state
 ```
 
-## v5 远端模型
+## v6 远端模型
 
-etcd namespace prefix 可配置, 默认 `/pemcast`. 固定子协议是 kind-first `/v5`:
+etcd namespace prefix 可配置, 默认 `/pemcast`. 固定子协议是 `/v6`:
 
 ```text
-<etcd-prefix>/v5/active/<target-id> = <generation>
-<etcd-prefix>/v5/bundles/<target-id>/<generation> = <complete JSON bundle>
+<etcd-prefix>/v6/active/<target-id> = <generation>
+<etcd-prefix>/v6/bundles/<target-id>/<generation> = <complete JSON bundle>
 ```
 
 bundle 是单 key JSON, 文件内容 base64 内联:
 
 ```json
 {
-  "schema": "pemcast/v5",
+  "schema": "pemcast/v6",
+  "type": "tls-server",
   "files": [
     {
       "name": "fullchain.pem",
-      "kind": "certificate",
+      "role": "certificate-chain",
+      "sha256": "<lowercase sha256>",
+      "encoding": "base64",
+      "data": "..."
+    },
+    {
+      "name": "privkey.pem",
+      "role": "private-key",
       "sha256": "<lowercase sha256>",
       "encoding": "base64",
       "data": "..."
     }
-  ],
-  "pairs": [
-    {"certificate": "fullchain.pem", "private-key": "privkey.pem"}
   ]
 }
 ```
@@ -83,18 +88,23 @@ bundle 是单 key JSON, 文件内容 base64 内联:
 约束:
 
 - target ID 和 generation 必须是单个安全 path component, 最长 128 bytes.
-- `kind` 只能是 `certificate` 或 `private-key`.
+- `type` 只能是 `tls-server`, `tls-client` 或 `trust`.
+- identity bundle 必须恰好包含 `fullchain.pem` 和 `privkey.pem`; trust bundle 必须恰好包含 `ca-bundle.pem` 且没有私钥.
+- `role` 只能是与 type 匹配的 `certificate-chain`, `private-key` 或 `ca-certificate`.
 - `encoding` 只能是 `base64`.
 - JSON 严格拒绝 unknown member.
 - 每个 file 的 SHA-256 必须匹配原始 bytes, 不是 base64 文本.
-- pair 两端必须引用正确 kind 的文件.
+- identity bundle 会解析整条 PEM chain, 校验 leaf-first 签名顺序, leaf/key 匹配, 算法和 EKU; trust bundle 中每张证书必须是 CA.
 - 完整 encoded bundle 最大 1 MiB.
 - bundle fetch 使用 exact key, 不接受 generation prefix 或额外 key.
 
-whole-bundle digest 按排序后的文件名和原始内容 SHA-256 计算:
+whole-bundle digest 按 bundle type 和排序后的文件名, 语义 role 与原始内容 SHA-256 计算:
 
 ```text
-SHA256("pemcast/v5" + NUL + for each sorted file: name + NUL + SHA256(raw content))
+SHA256(
+  "pemcast/v6" + NUL + bundle-type + NUL +
+  for each sorted file: name + NUL + role + NUL + SHA256(raw content)
+)
 ```
 
 generation 固定为:
@@ -107,7 +117,7 @@ agent 会拒绝 pointer generation 与 bundle digest 不一致的数据.
 
 ## 分阶段发布
 
-`pemcast tools pack` 只读取本地证书和私钥, 不访问 etcd. 它输出:
+`pemcast tools pack` 只读取本地证书材料, 不访问 etcd. 它输出:
 
 - `bundle.json`: canonical deterministic complete JSON bundle.
 - `metadata.json`: schema, prefix, target, generation, keys, encoded size, encoded bundle hash 和每个源文件 hash; 不包含私钥内容.
@@ -118,13 +128,27 @@ agent 会拒绝 pointer generation 与 bundle digest 不一致的数据.
 1. Stage immutable bundle. bundle key 不存在则创建; 已存在则要求 encoded bytes 完全相同. 任何差异都是数据损坏并必须失败.
 2. Capture active pointer 的 generation 和 ModRevision, 再用 etcd transaction CAS pointer. 首次发布条件是 `create(active) = 0`; 更新条件是 active value 和 ModRevision 都匹配.
 
-`pemcast publish` 读取 pack 后会独立重算 encoded bundle hash, file hash, whole digest, generation 和 TLS pair, 并拒绝 metadata keys 与当前 etcd prefix 不一致. 手动 `publish-v5.sh` 维护同一不变量, 但它不是产品镜像的一部分.
+`pemcast publish` 读取 pack 后会独立重算 encoded bundle hash, file hash, semantic whole digest, generation 和证书语义, 并拒绝 metadata keys 与当前 etcd prefix 不一致. 手动 `publish-v6.sh` 维护同一不变量, 但它不是产品镜像的一部分.
 
-v5 允许存在未被 active pointer 引用的孤儿 bundle. 这是设计结果, 不是失败: bundle 是 object database, active pointer 是 ref. 消费者只 watch active prefix, 因此 bundle stage 本身没有发布语义. 唯一 commit point 是 pointer CAS 成功.
+v6 允许存在未被 active pointer 引用的孤儿 bundle. 这是设计结果, 不是失败: bundle 是 object database, active pointer 是 ref. 消费者只 watch active prefix, 因此 bundle stage 本身没有发布语义. 唯一 commit point 是 pointer CAS 成功.
 
 etcd CAS transaction 的 success response 是 publish 的权威提交判定. CAS 成功后, 另一个合法发布可能立即覆盖 active pointer; 这不会使先前的成功发布变成失败.
 
 发布失败或并发冲突时可能留下已 stage 的 bundle, 可以保留给后续重试或由外部策略清理. active generation 对应的 bundle 必须永远保留.
+
+## v5 到 v6 upgrade
+
+`pemcast upgrade --dry-run` 是纯读操作. 实际迁移按 target 独立提交:
+
+1. Snapshot v5/v6 active prefix, 拒绝 v4, 空 v5, 无对应 v5 target 的 v6 active 或 divergent v6 active.
+2. 按 v5 snapshot revision exact-key 读取每个 active bundle.
+3. 用 v5 historical digest 和 canonical file set 验证 source.
+4. 根据操作者显式声明的 `tls-server` 或 `tls-client` 重建 v6 bundle.
+5. Stage destination immutable bundle.
+6. 在 source v5 pointer value + ModRevision 未变化且 destination pointer 仍不存在的条件下 CAS 写入 v6 pointer.
+7. 全部 target postverify 通过后, 才允许显式删除精确的 `<prefix>/v5/` prefix.
+
+v5 generation 不会推导 v6 generation; upgrade 从原始材料重建 v6 semantic digest. 默认保留 v5. 删除前必须停止旧 v5 publisher; 旧 v5 watcher 收到 delete event 后不会自动切到 v6.
 
 ## Reconcile
 
@@ -133,7 +157,7 @@ etcd CAS transaction 的 success response 是 publish 的权威提交判定. CAS
 1. 用进程内 mutex 串行化同 target.
 2. 获取全局 concurrency slot.
 3. 按事件 revision exact-key 获取 bundle.
-4. 校验 generation/digest, X509KeyPair, validity 和声明 pair.
+4. 校验 generation/digest, target type, identity 链/key/EKU 或 trust CA-only 语义, 以及 validity/SAN policy.
 5. dry-run 在任何本地访问前停止.
 6. 加载 state.
 7. 只在本地 selected digest 不同 时激活.
@@ -179,23 +203,27 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/appcmd/agent`: application 组装, output lock 与 once/watch 生命周期.
 - `internal/appcmd/config`: config example 和校验命令.
 - `internal/appcmd/tools/pack`: local pack CLI adapter.
-- `internal/appcmd/publish`: v5 staged publication CLI adapter.
+- `internal/appcmd/publish`: v6 staged publication CLI adapter.
+- `internal/appcmd/upgrade`: v5-to-v6 prefix migration CLI adapter.
 - `internal/appcmd/tools/seed`: 本地 seed CLI adapter.
 - `internal/appcmd/status`: 本地状态 CLI.
 - `internal/config`: schema, defaults, validation 和 cfgm 集成.
-- `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v5` kind-first key builder.
+- `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v6` key builder.
 - `internal/etcdsource`: active-prefix snapshot/watch 和 exact bundle fetch.
-- `internal/bundle`: v5 单 key manifest, digest, generation 和 TLS 校验.
+- `internal/bundle`: v6 单 key manifest, digest, generation 和 TLS 校验.
 - `internal/pack`: local TLS 校验, deterministic bundle, metadata 和 stage transaction 生成.
-- `internal/publisher`: v5 pack 的 immutable staging 与 active pointer CAS 状态机.
-- `internal/seed`: 从已验证 v5 pack 离线构建本地 release 的首装与显式救援命令.
+- `internal/publisher`: v6 pack 的 immutable staging 与 active pointer CAS 状态机.
+- `internal/upgrade`: v5-to-v6 snapshot, preflight, source-aware staged commit, postverify 和 optional old-prefix cleanup.
+- `internal/upgrade/legacy`: 当前二进制的 canonical v5 decoder/converter; v6-to-v7 一次性二进制直接替换为 v6 decoder/converter.
+- `internal/seed`: 从已验证 v6 pack 离线构建本地 release 的首装与显式救援命令.
 - `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
 - `internal/hook`: process group, 环境边界, 输出限额和 event schema.
 - `internal/state`: activation/hook state.
 - `internal/status`: 只读本地 target 状态.
-- `.agents/skills/repo-deployment/scripts/publish-v5.sh`: 手动 etcdctl staged publication fallback.
+- `.agents/skills/repo-deployment/scripts/publish-v6.sh`: 手动 etcdctl staged publication fallback.
 - `scripts/integration-etcd.sh`: 真实 etcd 3.7.2 auth/RBAC/publish/agent 集成测试.
 - `scripts/integration-etcd-seed.sh`: 真实 TLS etcd 的 seed 首装, watch 更新和显式救援集成测试.
+- `scripts/integration-etcd-upgrade.sh`: 真实 etcd 的 v5-to-v6 upgrade, agent 验证和 old-prefix cleanup 集成测试.
 
 已知边界: watch 模式与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.

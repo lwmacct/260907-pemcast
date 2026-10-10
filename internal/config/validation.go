@@ -4,11 +4,16 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/lwmacct/260907-pemcast/internal/bundle"
 )
 
 func (t Target) Validate() error {
 	if strings.TrimSpace(t.ID) == "" || strings.Contains(t.ID, "/") {
 		return fmt.Errorf("id must be non-empty and contain no slash")
+	}
+	if !validBundleType(t.Type) {
+		return fmt.Errorf("type must be one of tls-server, tls-client, or trust")
 	}
 	if t.DeletePolicy != "retain" && t.DeletePolicy != "fail" {
 		return fmt.Errorf("delete-policy must be retain or fail")
@@ -58,14 +63,30 @@ func (t Target) Validate() error {
 		remote[mapping.Remote] = struct{}{}
 		local[mapping.Local] = struct{}{}
 	}
-	if _, ok := remote[t.Validation.Certificate]; !ok {
-		return fmt.Errorf("validation.certificate must reference an output mapping")
+	expected := expectedRemoteFiles(t.Type)
+	if len(remote) != len(expected) {
+		return fmt.Errorf("type %q requires exactly %d remote mappings", t.Type, len(expected))
 	}
-	if _, ok := remote[t.Validation.PrivateKey]; !ok {
-		return fmt.Errorf("validation.private-key must reference an output mapping")
+	for name := range expected {
+		if _, ok := remote[name]; !ok {
+			return fmt.Errorf("type %q is missing remote mapping %q", t.Type, name)
+		}
 	}
 	if t.Validation.MinimumValidity < 0 {
 		return fmt.Errorf("validation.minimum-validity must not be negative")
+	}
+	if t.Type != bundle.TypeTLSServer && len(t.Validation.ServerNames) > 0 {
+		return fmt.Errorf("validation.server-names is only valid for tls-server targets")
+	}
+	seenServerName := make(map[string]struct{}, len(t.Validation.ServerNames))
+	for index, name := range t.Validation.ServerNames {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("validation.server-names[%d] must not be empty", index)
+		}
+		if _, exists := seenServerName[name]; exists {
+			return fmt.Errorf("validation server name %q is duplicated", name)
+		}
+		seenServerName[name] = struct{}{}
 	}
 	if t.Hook.Timeout < 0 {
 		return fmt.Errorf("hook.timeout must not be negative")
@@ -76,6 +97,24 @@ func (t Target) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validBundleType(value string) bool {
+	return value == bundle.TypeTLSServer || value == bundle.TypeTLSClient || value == bundle.TypeTrust
+}
+
+func expectedRemoteFiles(bundleType string) map[string]struct{} {
+	switch bundleType {
+	case bundle.TypeTLSServer, bundle.TypeTLSClient:
+		return map[string]struct{}{
+			bundle.NameCertificateChain: {},
+			bundle.NamePrivateKey:       {},
+		}
+	case bundle.TypeTrust:
+		return map[string]struct{}{bundle.NameCABundle: {}}
+	default:
+		return nil
+	}
 }
 
 func validEnvironmentName(name string) bool {

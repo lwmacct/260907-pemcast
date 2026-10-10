@@ -7,6 +7,8 @@ _provided_binary="${PEMCAST_BINARY:-}"
 _binary="${_provided_binary:-${_repo_root}/.local/pemcast-seed-integration}"
 _etcd_image="${ETCD_IMAGE:-gcr.io/etcd-development/etcd:v3.7.2}"
 _container="pemcast-seed-integration-etcd-$$"
+_copy_container="pemcast-seed-integration-copy-$$"
+_tls_volume="pemcast-seed-integration-tls-$$"
 _work_dir="$(mktemp -d)"
 _agent_pid=""
 
@@ -16,6 +18,8 @@ __cleanup() {
         wait "${_agent_pid}" 2>/dev/null || true
     fi
     docker rm -f "${_container}" >/dev/null 2>&1 || true
+    docker rm -f "${_copy_container}" >/dev/null 2>&1 || true
+    docker volume rm "${_tls_volume}" >/dev/null 2>&1 || true
 }
 
 __make_ca() {
@@ -50,6 +54,7 @@ __make_leaf() {
 __pack() {
     _name="$1"
     "${_binary}" tools pack \
+        --type tls-server \
         --target nginx \
         --etcd-prefix /pemcast \
         --certificate "${_work_dir}/${_name}-fullchain.pem" \
@@ -93,6 +98,10 @@ __stop_agent() {
     _agent_pid=""
 }
 
+__sync_tls_volume() {
+    docker cp "${_work_dir}/tls/." "${_copy_container}:/tls/"
+}
+
 __publish() {
     _name="$1"
     PEMCAST_AGENT_ETCD_ENDPOINTS="[\"https://localhost:${_etcd_port}\"]" \
@@ -115,7 +124,7 @@ __start_agent() {
 }
 
 __main() {
-    unset ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH
+    unset ETCDCTL_USER ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH
     if [[ -n "${_provided_binary}" ]]; then
         test -x "${_provided_binary}"
     else
@@ -143,6 +152,7 @@ agent:
       server-name: localhost
   targets:
     - id: nginx
+      type: tls-server
       delete-policy: retain
       output:
         root: ${_work_dir}/tls
@@ -157,8 +167,6 @@ agent:
             local: privkey.pem
             mode: "0600"
       validation:
-        certificate: fullchain.pem
-        private-key: privkey.pem
         reject-expired: true
         minimum-validity: 1h
       hook:
@@ -175,9 +183,14 @@ YAML
         ".pemcast/releases/sha256-${_generation_a#sha256-}"
 
     docker rm -f "${_container}" >/dev/null 2>&1 || true
+    docker volume create "${_tls_volume}" >/dev/null
+    docker run -d --name "${_copy_container}" \
+        --mount "type=volume,src=${_tls_volume},dst=/tls" \
+        alpine:3.20 sleep 300 >/dev/null
+    docker cp "${_work_dir}/tls/." "${_copy_container}:/tls/"
     docker run -d --name "${_container}" \
         -p 127.0.0.1::2379 \
-        -v "${_work_dir}/tls:/tls:ro" \
+        --mount "type=volume,src=${_tls_volume},dst=/tls,readonly" \
         "${_etcd_image}" \
         etcd \
         --listen-client-urls=https://0.0.0.0:2379 \
@@ -225,12 +238,14 @@ YAML
 
     __publish b
     __wait_file_value "${_work_dir}/status-b.json" "${_generation_b}"
+    __sync_tls_volume
     test "$(__served_serial)" == "$(__serial b)"
 
     __stop_agent
     "${_binary}" --config "${_work_dir}/agent.yaml" \
         tools \
         seed --force --target nginx --pack-dir "${_work_dir}/pack-rescue" >/dev/null
+    __sync_tls_volume
     test "$(__served_serial)" == "$(__serial rescue)"
     __publish rescue
     __start_agent

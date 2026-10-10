@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
 
+	"github.com/lwmacct/260907-pemcast/internal/bundle"
 	appconfig "github.com/lwmacct/260907-pemcast/internal/config"
 	"github.com/lwmacct/260907-pemcast/internal/deploy"
 	"github.com/lwmacct/260907-pemcast/internal/pack"
@@ -105,6 +106,7 @@ func writeConfiguration(t *testing.T, root string) string {
     prefix: /pemcast
   targets:
     - id: nginx
+      type: tls-server
       delete-policy: retain
       output:
         root: %s
@@ -119,8 +121,6 @@ func writeConfiguration(t *testing.T, root string) string {
             local: privkey.pem
             mode: "0600"
       validation:
-        certificate: fullchain.pem
-        private-key: privkey.pem
         reject-expired: true
         minimum-validity: 1h
 `, filepath.Join(root, "state"), root)
@@ -130,7 +130,7 @@ func writeConfiguration(t *testing.T, root string) string {
 
 func configuredTarget(root string) appconfig.Target {
 	return appconfig.Target{
-		ID: "nginx", DeletePolicy: "retain",
+		ID: "nginx", Type: bundle.TypeTLSServer, DeletePolicy: "retain",
 		Output: appconfig.Output{
 			Root: root, CurrentLink: "current", DirectoryMode: appconfig.FileMode("0700"),
 			Mappings: []appconfig.FileMapping{
@@ -139,7 +139,7 @@ func configuredTarget(root string) appconfig.Target {
 			},
 		},
 		Validation: appconfig.Validation{
-			Certificate: "fullchain.pem", PrivateKey: "privkey.pem", RejectExpired: true,
+			RejectExpired: true,
 		},
 	}
 }
@@ -149,6 +149,7 @@ func writePack(t *testing.T, root, targetID, commonName string, lifetime time.Du
 
 	certificatePath, privateKeyPath := writeKeyPair(t, commonName, lifetime)
 	result, err := pack.Build(pack.Options{
+		Type:     "tls-server",
 		TargetID: targetID, EtcdPrefix: "/pemcast",
 		CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
 	})

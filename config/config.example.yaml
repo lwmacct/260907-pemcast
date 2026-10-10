@@ -10,7 +10,7 @@ agent:
 
   # etcd client configuration
   etcd:
-    prefix: "/pemcast" # etcd namespace prefix placed before /v5
+    prefix: "/pemcast" # etcd namespace prefix placed before /v6
 
     # etcd endpoint URLs
     endpoints:
@@ -36,6 +36,7 @@ agent:
   # certificate synchronization targets
   targets:
     - id: "nginx" # target identifier and remote active-pointer name
+      type: "tls-server" # certificate bundle type: tls-server, tls-client, or trust
       delete-policy: "retain" # action when the active pointer is deleted: retain or fail
 
       # local release directory configuration
@@ -56,10 +57,11 @@ agent:
 
       # TLS material validation configuration
       validation:
-        certificate: "fullchain.pem" # remote certificate file to validate
-        private-key: "privkey.pem" # remote private key file to validate
-        reject-expired: true # reject an expired leaf certificate
-        minimum-validity: 1h0m0s # minimum required remaining leaf validity
+        reject-expired: true # reject expired bundle certificates
+        minimum-validity: 1h0m0s # minimum required remaining certificate validity
+
+        # required DNS names or IP addresses for tls-server targets
+        server-names: []
 
       # post-activation hook configuration
       hook:
@@ -75,15 +77,17 @@ agent:
 # pemcast local command tools
 tools:
 
-  # local v5 pack builder configuration
+  # local v6 pack builder configuration
   pack:
+    type: "tls-server" # certificate bundle type: tls-server, tls-client, or trust
     target: "" # target ID
     certificate: "" # path to fullchain.pem
     private-key: "" # path to privkey.pem
-    etcd-prefix: "/pemcast" # etcd namespace prefix placed before /v5
+    ca: "" # path to ca-bundle.pem for trust
+    etcd-prefix: "/pemcast" # etcd namespace prefix placed before /v6
     output-dir: "" # new absolute directory for bundle.json, metadata.json, and stage.txn
 
-  # local v5 release seeder configuration
+  # local v6 release seeder configuration
   seed:
     target: "" # target ID from the agent configuration
     pack-dir: "" # directory containing bundle.json and metadata.json
