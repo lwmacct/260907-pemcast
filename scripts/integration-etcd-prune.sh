@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+if [[ "${PEMCAST_INTEGRATION_TRACE:-0}" == "1" ]]; then
+    set -x
+fi
 
 _repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 _provided_binary="${PEMCAST_BINARY:-}"
