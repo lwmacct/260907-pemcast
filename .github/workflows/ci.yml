@@ -72,7 +72,6 @@ jobs:
       - name: Run integration
         env:
           PEMCAST_BINARY: ${{ github.workspace }}/.local/pemcast-integration
-          PEMCAST_INTEGRATION_TRACE: "1"
         run: |
           bash scripts/integration-etcd.sh
           bash scripts/integration-etcd-seed.sh

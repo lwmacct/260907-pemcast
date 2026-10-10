@@ -21,14 +21,6 @@ __cleanup() {
     fi
 }
 
-__on_exit() {
-    _exit_code="$?"
-    if (( _exit_code != 0)); then
-        printf 'prune integration failed near line %s\n' "${BASH_LINENO[0]}" >&2
-    fi
-    __cleanup
-}
-
 __require_commands() {
     command -v docker >/dev/null
     command -v etcdctl >/dev/null
@@ -57,11 +49,13 @@ __make_identity() {
         -subj "/CN=${_name}" \
         -keyout "${_work_dir}/${_name}.key" \
         -out "${_work_dir}/${_name}.csr" >/dev/null 2>&1
-    openssl x509 -req -in "${_work_dir}/${_name}.csr" \
-        -signkey "${_work_dir}/${_name}.key" \
+    openssl ca -batch -selfsign \
+        -in "${_work_dir}/${_name}.csr" \
+        -keyfile "${_work_dir}/${_name}.key" \
         -not_before "${_not_before}" \
         -not_after "${_not_after}" \
         -extfile "${_work_dir}/identity.ext" \
+        -config "${_work_dir}/ca.cnf" \
         -out "${_work_dir}/${_name}.pem" >/dev/null 2>&1
 }
 
@@ -70,11 +64,13 @@ __make_expired_ca() {
         -subj '/CN=prune-expired-ca' \
         -keyout "${_work_dir}/trust.key" \
         -out "${_work_dir}/trust.csr" >/dev/null 2>&1
-    openssl x509 -req -in "${_work_dir}/trust.csr" \
-        -signkey "${_work_dir}/trust.key" \
+    openssl ca -batch -selfsign \
+        -in "${_work_dir}/trust.csr" \
+        -keyfile "${_work_dir}/trust.key" \
         -not_before 200102000000Z \
         -not_after 200103000000Z \
         -extfile "${_work_dir}/trust.ext" \
+        -config "${_work_dir}/ca.cnf" \
         -out "${_work_dir}/trust.pem" >/dev/null 2>&1
 }
 
@@ -164,8 +160,7 @@ __main() {
     else
         (cd "${_repo_root}" && go build -o "${_binary}" ./cmd/pemcast)
     fi
-    trap __on_exit EXIT
-    trap '__cleanup; exit 130' HUP INT TERM
+    trap __cleanup EXIT HUP INT TERM
 
     cat >"${_work_dir}/identity.ext" <<'EOF'
 basicConstraints=critical,CA:FALSE
@@ -175,6 +170,25 @@ EOF
     cat >"${_work_dir}/trust.ext" <<'EOF'
 basicConstraints=critical,CA:TRUE
 keyUsage=critical,keyCertSign,cRLSign
+EOF
+    mkdir "${_work_dir}/newcerts"
+    touch "${_work_dir}/index.txt"
+    echo 1000 >"${_work_dir}/serial"
+    cat >"${_work_dir}/ca.cnf" <<EOF
+[ ca ]
+default_ca = CA_default
+
+[ CA_default ]
+dir = ${_work_dir}
+database = ${_work_dir}/index.txt
+serial = ${_work_dir}/serial
+new_certs_dir = ${_work_dir}/newcerts
+unique_subject = no
+default_md = default
+policy = policy_any
+
+[ policy_any ]
+commonName = optional
 EOF
 
     openssl req -x509 -newkey ed25519 -nodes -days 2 \
