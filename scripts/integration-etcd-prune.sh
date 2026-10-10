@@ -52,8 +52,8 @@ __make_identity() {
     openssl ca -batch -selfsign \
         -in "${_work_dir}/${_name}.csr" \
         -keyfile "${_work_dir}/${_name}.key" \
-        -not_before "${_not_before}" \
-        -not_after "${_not_after}" \
+        -startdate "${_not_before}" \
+        -enddate "${_not_after}" \
         -extfile "${_work_dir}/identity.ext" \
         -config "${_work_dir}/ca.cnf" \
         -out "${_work_dir}/${_name}.pem" >/dev/null 2>&1
@@ -67,8 +67,8 @@ __make_expired_ca() {
     openssl ca -batch -selfsign \
         -in "${_work_dir}/trust.csr" \
         -keyfile "${_work_dir}/trust.key" \
-        -not_before 200102000000Z \
-        -not_after 200103000000Z \
+        -startdate 200102000000Z \
+        -enddate 200103000000Z \
         -extfile "${_work_dir}/trust.ext" \
         -config "${_work_dir}/ca.cnf" \
         -out "${_work_dir}/trust.pem" >/dev/null 2>&1
