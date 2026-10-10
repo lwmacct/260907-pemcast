@@ -81,7 +81,10 @@ func (c *Controller) Reconcile(ctx context.Context, id, generation string, revis
 		return nil
 	}
 	lockValue, _ := c.locks.LoadOrStore(id, &sync.Mutex{})
-	lock := lockValue.(*sync.Mutex)
+	lock, ok := lockValue.(*sync.Mutex)
+	if !ok {
+		return fmt.Errorf("target %q has an invalid reconcile lock", id)
+	}
 	lock.Lock()
 	defer lock.Unlock()
 	select {
@@ -152,7 +155,7 @@ func (c *Controller) Reconcile(ctx context.Context, id, generation string, revis
 	if err := c.hooks.Run(ctx, target.Hook, event); err != nil {
 		next.HookError = err.Error()
 		if saveErr := c.state.Save(id, next); saveErr != nil {
-			return fmt.Errorf("%v; save hook failure: %w", err, saveErr)
+			return fmt.Errorf("%w; save hook failure: %w", err, saveErr)
 		}
 		return fmt.Errorf("run target %q hook: %w", id, err)
 	}

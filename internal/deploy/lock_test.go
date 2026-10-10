@@ -29,7 +29,7 @@ func TestLockRootsExcludesCompetingProcess(t *testing.T) {
 	require.Len(t, locks, 1)
 	require.FileExists(t, filepath.Join(root, ".pemcast", "agent.lock"))
 
-	process := exec.Command(os.Args[0], "-test.run=^TestLockRootsHelperProcess$")
+	process := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestLockRootsHelperProcess$")
 	process.Env = append(os.Environ(), "PEMCAST_LOCK_TEST_ROOT="+root)
 	require.NoError(t, process.Run())
 

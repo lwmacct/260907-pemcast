@@ -57,8 +57,9 @@ func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
 
 func (a *Application) Close() error {
 	sourceErr := a.source.Close()
-	if errors.Is(sourceErr, context.Canceled) {
-		sourceErr = nil
+	var etcdCloseErr error
+	if sourceErr != nil && !errors.Is(sourceErr, context.Canceled) {
+		etcdCloseErr = sourceErr
 	}
 	var lockErrs []error
 	for _, lock := range a.locks {
@@ -66,7 +67,7 @@ func (a *Application) Close() error {
 			lockErrs = append(lockErrs, err)
 		}
 	}
-	return errors.Join(append([]error{sourceErr}, lockErrs...)...)
+	return errors.Join(append([]error{etcdCloseErr}, lockErrs...)...)
 }
 
 func closeRootLocks(locks []*deploy.RootLock) {
@@ -88,10 +89,7 @@ func (a *Application) Run(ctx context.Context) error {
 
 func (a *Application) runWatch(ctx context.Context) error {
 	var failures int
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
+	for ctx.Err() == nil {
 		snapshot, err := a.source.SnapshotActive(ctx)
 		if err != nil {
 			failures++
@@ -163,6 +161,7 @@ func (a *Application) runWatch(ctx context.Context) error {
 			return nil
 		}
 	}
+	return nil
 }
 
 func (a *Application) retryDelay(failures int) time.Duration {

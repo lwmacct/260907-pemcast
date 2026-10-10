@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/urfave/cli/v3"
@@ -20,8 +21,9 @@ var Command = &cli.Command{
 			if err != nil {
 				return err
 			}
-			defer application.Close()
-			return application.Run(ctx)
+			runErr := application.Run(ctx)
+			closeErr := application.Close()
+			return errors.Join(runErr, closeErr)
 		},
 		config.AgentEtcdUserTemplate,
 	),
