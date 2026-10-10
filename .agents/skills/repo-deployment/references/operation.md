@@ -50,6 +50,12 @@ publish readwrite   /pemcast/ --prefix
 
 使用 skill 提供的脚本初始化. 脚本要求 etcd auth 已启用, 并交互读取 root, agent user, publisher user 三个密码; 既有用户不会被重置密码. TLS 参数复用 etcdctl 的 `ETCDCTL_CACERT`, `ETCDCTL_CERT` 和 `ETCDCTL_KEY` 环境变量.
 
+人工创建或轮换 etcd 密码时, 使用只含字母数字的 32 字符随机值:
+
+```bash
+openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32
+```
+
 ```bash
 ETCDCTL_ENDPOINTS='https://etcd.example:2379' \
 bash .agents/skills/repo-deployment/scripts/init-rbac.sh \
