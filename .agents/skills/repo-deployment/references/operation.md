@@ -83,7 +83,7 @@ agent:
     prefix: /pemcast
 ```
 
-发布端复用 `agent.etcd` 配置. `pemcast pack` 使用 `--etcd-prefix`, `pemcast publish` 使用 `agent.etcd.prefix` 与同一组 etcd endpoint 和 TLS 配置. etcd 认证统一为 `username:password`; agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
+发布端复用 `agent.etcd` 配置. `pemcast tools pack` 使用 `--etcd-prefix`, `pemcast publish` 使用 `agent.etcd.prefix` 与同一组 etcd endpoint 和 TLS 配置. etcd 认证统一为 `username:password`; agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
 
 使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcd.tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcd.tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
 
@@ -99,11 +99,25 @@ pemcast --config /etc/pemcast/config.yaml agent
 
 非 dry-run agent 会自动创建本地目录: `agent.state-dir` 固定为 0700, 每个 target 的 output root 与 `.pemcast` 使用该 target 的 `output.directory-mode`. 部署脚本不需要预创建这些路径. `--once --dry-run` 保持无本地写入, 不会创建 state 或 output path.
 
+### 自引用服务首装
+
+当 etcd 自身的 server TLS 也由 pemcast 管理时, 先通过外部签发流程获得真实证书并执行 `pemcast tools pack`, 再在 etcd 启动前执行:
+
+```bash
+pemcast --config /etc/pemcast/config.yaml \
+  tools \
+  seed --target etcd --pack-dir /secure/tmp/etcd-pack
+```
+
+seed 不访问 etcd, 不写 agent state, 不改变 active pointer. 它只物化本地 content-addressed release 和 `current`. 随后 etcd 只读挂载完整 output root, 与 agent 同时启动. pointer 缺失时使用 `delete-policy: retain` 的 agent 会保留本地 release 并等待首次 publish.
+
+本地 `current` 指向不同 generation 时, seed 默认拒绝. 只有停止 agent 后的显式人工救援才使用 `seed --force`; 随后正常 publish 同一 pack, 再启动 agent. 不要用固定自签证书, 指纹 fallback 或 `insecure-skip-verify` 来隐藏这个首装边界.
+
 ## 部署分层
 
 通用 pemcast 部署脚本只负责运行工具容器, 挂载配置, 持久化 agent 数据和提供 hook 所需的控制通道. target id, output root, mapping 和 reload 策略全部由配置文件决定; 不要在通用部署脚本中引用具体 target 或预检某个 target 的证书文件.
 
-消费者部署脚本只表达自己的挂载语义, 例如把 pemcast output namespace 挂载到 `/etc/<consumer>/tls`; 具体使用哪个 target 由消费者配置决定. 首次部署时先启动或同步 agent, 再启动必须立即读取证书的消费者, 或在 agent 完成同步后 reload/restart 消费者.
+消费者部署脚本只表达自己的挂载语义, 例如把 pemcast output namespace 挂载到 `/etc/<consumer>/tls`; 具体使用哪个 target 由消费者配置决定. 首次部署时先启动或同步 agent, 再启动必须立即读取证书的消费者, 或在 agent 完成同步后 reload/restart 消费者. 自引用的 etcd 例外: 先用真实证书 pack 执行 seed, 再让 etcd 与 agent 同时启动.
 
 ## 容器部署拓扑
 

@@ -13,9 +13,8 @@ __cleanup() {
 }
 
 __main() {
-    if [[ ! -x "${_binary}" ]]; then
-        (cd "${_repo_root}" && go build -o "${_binary}" ./cmd/pemcast)
-    fi
+    unset ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH
+    (cd "${_repo_root}" && go build -o "${_binary}" ./cmd/pemcast)
 
     docker rm -f "${_container}" >/dev/null 2>&1 || true
     docker run -d --name "${_container}" \
@@ -56,13 +55,13 @@ __main() {
     openssl req -x509 -newkey ed25519 -nodes -subj '/CN=integration-b' -days 2 \
         -keyout "${_work_dir}/b-key.pem" -out "${_work_dir}/b-cert.pem" >/dev/null 2>&1
 
-    "${_binary}" pack \
+    "${_binary}" tools pack \
         --target nginx \
         --certificate "${_work_dir}/a-cert.pem" \
         --private-key "${_work_dir}/a-key.pem" \
         --etcd-prefix /pemcast \
         --output-dir "${_work_dir}/pack-a" >/dev/null
-    "${_binary}" pack \
+    "${_binary}" tools pack \
         --target nginx \
         --certificate "${_work_dir}/b-cert.pem" \
         --private-key "${_work_dir}/b-key.pem" \
@@ -75,11 +74,61 @@ __main() {
     _active_key="$(jq -er '.["active-key"]' "${_work_dir}/pack-a/metadata.json")"
     _endpoints_json="$(jq -Rn --arg endpoint "${_endpoint}" '[$endpoint]')"
 
+    cat >"${_work_dir}/agent.yaml" <<YAML
+agent:
+  state-dir: ${_work_dir}/state
+  etcd:
+    endpoints: ["http://integration-invalid:2379"]
+    prefix: /pemcast
+  targets:
+    - id: nginx
+      delete-policy: retain
+      output:
+        root: ${_work_dir}/tls
+        current-link: current
+        retain-releases: 3
+        directory-mode: "0700"
+        mappings:
+          - remote: fullchain.pem
+            local: fullchain.pem
+            mode: "0644"
+          - remote: privkey.pem
+            local: privkey.pem
+            mode: "0600"
+      validation:
+        certificate: fullchain.pem
+        private-key: privkey.pem
+        reject-expired: true
+        minimum-validity: 1h
+      hook:
+        path: /bin/true
+        args: []
+        timeout: 5s
+        pass-environment: []
+YAML
+
+    "${_binary}" --config "${_work_dir}/agent.yaml" \
+        tools \
+        seed --target nginx --pack-dir "${_work_dir}/pack-a" >/dev/null
+    test "$(readlink "${_work_dir}/tls/current")" = \
+        ".pemcast/releases/sha256-${_generation_a#sha256-}"
+    test ! -e "${_work_dir}/state/nginx.json"
+
     PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
         PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
         ETCDCTL_USER_PUBLISH='publisher-integration:publisher-integration-password' \
         "${_binary}" publish --pack-dir "${_work_dir}/pack-a"
     test "$(etcdctl get "${_active_key}" --print-value-only)" = "${_generation_a}"
+
+    PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
+        PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
+        ETCDCTL_USER_AGENT='agent-integration:agent-integration-password' \
+        "${_binary}" --config "${_work_dir}/agent.yaml" agent --once \
+        >"${_work_dir}/seeded-agent-once.log" 2>&1
+    "${_binary}" --config "${_work_dir}/agent.yaml" status --json \
+        >"${_work_dir}/seeded-status.json"
+    test "$(jq -er '.targets[0].state.generation' "${_work_dir}/seeded-status.json")" = "${_generation_a}"
+    test "$(jq -er '.targets[0].current["local-digest"]' "${_work_dir}/seeded-status.json")" = "${_generation_a#sha256-}"
 
     PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
         PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
@@ -123,45 +172,13 @@ __main() {
         ETCDCTL_USER_PUBLISH='publisher-integration:publisher-integration-password' \
         "${_binary}" publish --pack-dir "${_work_dir}/pack-b"
 
-    cat >"${_work_dir}/agent.yaml" <<YAML
-agent:
-  state-dir: ${_work_dir}/state
-  etcd:
-    endpoints: ["http://integration-invalid:2379"]
-    prefix: /pemcast
-  targets:
-    - id: nginx
-      delete-policy: retain
-      output:
-        root: ${_work_dir}/tls
-        current-link: current
-        retain-releases: 3
-        directory-mode: "0700"
-        mappings:
-          - remote: fullchain.pem
-            local: fullchain.pem
-            mode: "0644"
-          - remote: privkey.pem
-            local: privkey.pem
-            mode: "0600"
-      validation:
-        certificate: fullchain.pem
-        private-key: privkey.pem
-        reject-expired: true
-        minimum-validity: 1h
-      hook:
-        path: /bin/true
-        args: []
-        timeout: 5s
-        pass-environment: []
-YAML
-
     PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
         PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
         ETCDCTL_USER_AGENT='agent-integration:agent-integration-password' \
         "${_binary}" --config "${_work_dir}/agent.yaml" agent --once --dry-run \
         >"${_work_dir}/agent-dry-run.log" 2>&1
-    test ! -e "${_work_dir}/tls"
+    test "$(readlink "${_work_dir}/tls/current")" = \
+        ".pemcast/releases/sha256-${_generation_a#sha256-}"
 
     PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
         PEMCAST_AGENT_ETCD_PREFIX=/pemcast \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Manual pemcast v5 publisher for operators who intentionally use etcdctl.
-# The supported product path is `pemcast pack` followed by `pemcast publish`.
+# The supported product path is `pemcast tools pack` followed by `pemcast publish`.
 
 set -euo pipefail
 
@@ -14,7 +14,7 @@ __usage() {
   printf '%s\n' 'Publish a pemcast v5 pack with etcdctl.'
   printf '%s\n' ''
   printf '%s\n' 'Required:'
-  printf '%s\n' '  --pack-dir DIR  directory produced by pemcast pack'
+  printf '%s\n' '  --pack-dir DIR  directory produced by pemcast tools pack'
   printf '%s\n' ''
   printf '%s\n' 'etcdctl connection settings are read from ETCDCTL_ENDPOINTS and standard'
   printf '%s\n' 'ETCDCTL_* environment variables.'

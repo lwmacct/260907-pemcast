@@ -9,6 +9,7 @@ import (
 
 	"github.com/lwmacct/260907-pemcast/internal/config"
 	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
+	"github.com/lwmacct/260907-pemcast/internal/keyspace"
 	"github.com/lwmacct/260907-pemcast/internal/pack"
 	"github.com/lwmacct/260907-pemcast/internal/publisher"
 )
@@ -35,6 +36,16 @@ var Command = &cli.Command{
 		result, err := pack.Read(command.String("pack-dir"))
 		if err != nil {
 			return err
+		}
+		keys, err := keyspace.NewKeys(cfg.Agent.Etcd.Prefix)
+		if err != nil {
+			return err
+		}
+		if result.Metadata.EtcdPrefix != keys.Prefix() {
+			return fmt.Errorf(
+				"pack etcd prefix %q does not match configured prefix %q",
+				result.Metadata.EtcdPrefix, keys.Prefix(),
+			)
 		}
 		client, err := etcdsource.New(cfg.Agent.Etcd)
 		if err != nil {

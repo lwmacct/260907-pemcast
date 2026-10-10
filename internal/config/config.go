@@ -22,6 +22,7 @@ const DefaultEtcdPrefix = "/pemcast"
 // Config is grouped by CLI subcommand so cfgm can trim command prefixes.
 type Config struct {
 	Agent Agent `json:"agent" desc:"pemcast agent configuration"`
+	Tools Tools `json:"tools" desc:"pemcast local command tools"`
 }
 
 // Agent configures the long-running or one-shot synchronization agent.
@@ -33,6 +34,28 @@ type Agent struct {
 	Etcd          Etcd     `json:"etcd"           desc:"etcd client configuration"`
 	Watch         Watch    `json:"watch"          desc:"etcd watch and retry configuration"`
 	Targets       []Target `json:"targets"        desc:"certificate synchronization targets"`
+}
+
+// Tools groups command-specific local tool configuration.
+type Tools struct {
+	Pack Pack `json:"pack" desc:"local v5 pack builder configuration"`
+	Seed Seed `json:"seed" desc:"local v5 release seeder configuration"`
+}
+
+// Pack configures the offline deterministic v5 pack builder.
+type Pack struct {
+	TargetID        string `json:"target"      desc:"target ID"`
+	CertificatePath string `json:"certificate" desc:"path to fullchain.pem"`
+	PrivateKeyPath  string `json:"private-key" desc:"path to privkey.pem"`
+	EtcdPrefix      string `json:"etcd-prefix" desc:"etcd namespace prefix placed before /v5"`
+	OutputDir       string `json:"output-dir"  desc:"new absolute directory for bundle.json, metadata.json, and stage.txn"`
+}
+
+// Seed configures offline materialization of one validated v5 pack.
+type Seed struct {
+	TargetID string `json:"target"   desc:"target ID from the agent configuration"`
+	PackDir  string `json:"pack-dir" desc:"directory containing bundle.json and metadata.json"`
+	Force    bool   `json:"force"    desc:"replace an existing different local release during an explicit rescue"`
 }
 
 // Etcd configures access to the remote etcd cluster.
@@ -106,23 +129,26 @@ type Hook struct {
 // DefaultConfig returns safe operational defaults. No target is supplied
 // because local destinations and reload hooks are deployment-specific.
 func DefaultConfig() Config {
-	return Config{Agent: Agent{
-		StateDir:      "/var/lib/pemcast",
-		MaxConcurrent: 4,
-		Etcd: Etcd{
-			Prefix:         DefaultEtcdPrefix,
-			Endpoints:      []string{"http://127.0.0.1:2379"},
-			DialTimeout:    5 * time.Second,
-			RequestTimeout: 10 * time.Second,
+	return Config{
+		Agent: Agent{
+			StateDir:      "/var/lib/pemcast",
+			MaxConcurrent: 4,
+			Etcd: Etcd{
+				Prefix:         DefaultEtcdPrefix,
+				Endpoints:      []string{"http://127.0.0.1:2379"},
+				DialTimeout:    5 * time.Second,
+				RequestTimeout: 10 * time.Second,
+			},
+			Watch: Watch{
+				ResyncInterval: 10 * time.Minute,
+				RetryMin:       time.Second,
+				RetryMax:       30 * time.Second,
+				JitterRatio:    0.2,
+			},
+			Targets: nil,
 		},
-		Watch: Watch{
-			ResyncInterval: 10 * time.Minute,
-			RetryMin:       time.Second,
-			RetryMax:       30 * time.Second,
-			JitterRatio:    0.2,
-		},
-		Targets: nil,
-	}}
+		Tools: Tools{Pack: Pack{EtcdPrefix: DefaultEtcdPrefix}},
+	}
 }
 
 // ExampleConfig returns defaults plus one representative target for operators

@@ -71,3 +71,20 @@ agent:
 
         # existing environment variable names explicitly passed to the hook
         pass-environment: []
+
+# pemcast local command tools
+tools:
+
+  # local v5 pack builder configuration
+  pack:
+    target: "" # target ID
+    certificate: "" # path to fullchain.pem
+    private-key: "" # path to privkey.pem
+    etcd-prefix: "/pemcast" # etcd namespace prefix placed before /v5
+    output-dir: "" # new absolute directory for bundle.json, metadata.json, and stage.txn
+
+  # local v5 release seeder configuration
+  seed:
+    target: "" # target ID from the agent configuration
+    pack-dir: "" # directory containing bundle.json and metadata.json
+    force: false # replace an existing different local release during an explicit rescue

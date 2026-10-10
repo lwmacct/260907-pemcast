@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func TestPackCommandCreatesPrivateArtifacts(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "pack")
 
 	err := runCommand(t, []string{
-		"pemcast", "pack",
+		"pemcast", "tools", "pack",
 		"--target", "nginx",
 		"--certificate", certificatePath,
 		"--private-key", privateKeyPath,
@@ -48,7 +49,7 @@ func TestPackCommandRejectsMismatchedKeyPairAndExistingOutput(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "pack")
 
 	err := runCommand(t, []string{
-		"pemcast", "pack",
+		"pemcast", "tools", "pack",
 		"--target", "nginx",
 		"--certificate", certificatePath,
 		"--private-key", otherPrivateKeyPath,
@@ -60,7 +61,7 @@ func TestPackCommandRejectsMismatchedKeyPairAndExistingOutput(t *testing.T) {
 	validCertificatePath, validPrivateKeyPath := writeKeyPair(t, "cli-pack-valid")
 	require.NoError(t, os.Mkdir(outputDir, 0o700))
 	err = runCommand(t, []string{
-		"pemcast", "pack",
+		"pemcast", "tools", "pack",
 		"--target", "nginx",
 		"--certificate", validCertificatePath,
 		"--private-key", validPrivateKeyPath,
@@ -69,14 +70,18 @@ func TestPackCommandRejectsMismatchedKeyPairAndExistingOutput(t *testing.T) {
 	require.ErrorContains(t, err, "already exists")
 }
 
+var (
+	application = &cli.Command{
+		Name:     "pemcast",
+		Commands: []*cli.Command{{Name: "tools", Commands: []*cli.Command{Command}}},
+	}
+	configureOnce sync.Once
+)
+
 func runCommand(t *testing.T, arguments []string) error {
 	t.Helper()
 
-	application := &cli.Command{
-		Name:     "pemcast",
-		Commands: []*cli.Command{Command},
-	}
-	appconfig.Manager.MustConfigure(application)
+	configureOnce.Do(func() { appconfig.Manager.MustConfigure(application) })
 	return application.Run(t.Context(), arguments)
 }
 

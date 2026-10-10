@@ -11,7 +11,7 @@ generation 由 bundle 内容计算, 操作者不手工命名. 单 key JSON 将�
 
 ```mermaid
 flowchart TD
-    material["证书与私钥"] --> pack["pemcast pack"]
+    material["证书与私钥"] --> pack["pemcast tools pack"]
     pack --> artifacts["bundle.json + metadata.json"]
     artifacts --> publish["pemcast publish"]
     publish --> validate["独立重算 hash, digest, generation 与 TLS pair"]
@@ -27,7 +27,7 @@ flowchart TD
 ## pack
 
 ```bash
-pemcast pack \
+pemcast tools pack \
   --etcd-prefix /pemcast \
   --target nginx \
   --certificate fullchain.pem \
@@ -47,7 +47,7 @@ pemcast pack \
 
 输出目录必须不存在. `bundle.json` 与 `stage.txn` 包含私钥, 权限为 0600; 整个 pack 目录应保存在受限存储中并在使用后清理.
 
-`pemcast pack` 会在写盘前完整校验 pack. `stage.txn` 缺失时可由 bundle 与 bundle key 重建; 非空但与 bundle 不一致时拒绝写入.
+`pemcast tools pack` 会在写盘前完整校验 pack. `stage.txn` 缺失时可由 bundle 与 bundle key 重建; 非空但与 bundle 不一致时拒绝写入.
 
 ## 推荐 publish
 
@@ -134,7 +134,7 @@ PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
 pemcast publish --pack-dir /secure/archive/nginx-pack-sha256-old
 ```
 
-如果旧 pack 目录没有保留, 使用当时完全相同的证书和私钥重新 `pemcast pack`; deterministic generation 与 bundle bytes 会相同. 不建议只凭 generation 字符串盲写 pointer. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
+如果旧 pack 目录没有保留, 使用当时完全相同的证书和私钥重新 `pemcast tools pack`; deterministic generation 与 bundle bytes 会相同. 不建议只凭 generation 字符串盲写 pointer. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
 
 ## 运维规则
 

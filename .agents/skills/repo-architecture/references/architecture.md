@@ -2,9 +2,11 @@
 
 ## 定位
 
-pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast pack` 在本地校验证书并生成 immutable v5 bundle 与 metadata; `pemcast publish` 先 stage bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. agent 只监听 active pointer, 按事件 revision exact-key 读取 bundle, 校验后在本地物化 immutable release 并切换稳定 symlink. 服务重载交给可信 hook.
+pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast tools pack` 在本地校验证书并生成 immutable v5 bundle 与 metadata; `pemcast publish` 先 stage bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. agent 只监听 active pointer, 按事件 revision exact-key 读取 bundle, 校验后在本地物化 immutable release 并切换稳定 symlink. 服务重载交给可信 hook.
 
 仓库不包含 etcd lease manager, service-control integration 或 HTTP API. etcdctl helper 位于 repo-deployment skill, 仅作为手动 fallback; 产品发布路径是单一 `pemcast publish --pack-dir`, 不存在 v4 plan/apply/activate 状态机.
+
+`pemcast tools seed` 可以在首装或显式救援时离线物化同一个 deterministic release, 但不读写远端 pointer 或 agent state.
 
 ## 运行流程
 
@@ -24,7 +26,7 @@ watch 模式中单个 reconcile 失败只记录日志, 不停止进程.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant P as pemcast pack
+    participant P as pemcast tools pack
     participant P2 as pemcast publish
     participant E as etcd
     participant A as agent
@@ -105,7 +107,7 @@ agent 会拒绝 pointer generation 与 bundle digest 不一致的数据.
 
 ## 分阶段发布
 
-`pemcast pack` 只读取本地证书和私钥, 不访问 etcd. 它输出:
+`pemcast tools pack` 只读取本地证书和私钥, 不访问 etcd. 它输出:
 
 - `bundle.json`: canonical deterministic complete JSON bundle.
 - `metadata.json`: schema, prefix, target, generation, keys, encoded size, encoded bundle hash 和每个源文件 hash; 不包含私钥内容.
@@ -176,8 +178,9 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `cmd/pemcast`: CLI 入口和 signal context.
 - `internal/appcmd/agent`: application 组装, output lock 与 once/watch 生命周期.
 - `internal/appcmd/config`: config example 和校验命令.
-- `internal/appcmd/pack`: local pack CLI adapter.
+- `internal/appcmd/tools/pack`: local pack CLI adapter.
 - `internal/appcmd/publish`: v5 staged publication CLI adapter.
+- `internal/appcmd/tools/seed`: 本地 seed CLI adapter.
 - `internal/appcmd/status`: 本地状态 CLI.
 - `internal/config`: schema, defaults, validation 和 cfgm 集成.
 - `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v5` kind-first key builder.
@@ -185,6 +188,7 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/bundle`: v5 单 key manifest, digest, generation 和 TLS 校验.
 - `internal/pack`: local TLS 校验, deterministic bundle, metadata 和 stage transaction 生成.
 - `internal/publisher`: v5 pack 的 immutable staging 与 active pointer CAS 状态机.
+- `internal/seed`: 从已验证 v5 pack 离线构建本地 release 的首装与显式救援命令.
 - `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
 - `internal/hook`: process group, 环境边界, 输出限额和 event schema.
@@ -192,5 +196,6 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/status`: 只读本地 target 状态.
 - `.agents/skills/repo-deployment/scripts/publish-v5.sh`: 手动 etcdctl staged publication fallback.
 - `scripts/integration-etcd.sh`: 真实 etcd 3.7.2 auth/RBAC/publish/agent 集成测试.
+- `scripts/integration-etcd-seed.sh`: 真实 TLS etcd 的 seed 首装, watch 更新和显式救援集成测试.
 
 已知边界: watch 模式与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.

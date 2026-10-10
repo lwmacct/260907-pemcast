@@ -1,10 +1,10 @@
 # pemcast
 
-pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent, 同时提供 v5 staged publisher. `pemcast pack` 从证书内容计算 content-addressed generation, 并生成 deterministic bundle 与 metadata; `pemcast publish` 先 stage immutable bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. pemcast agent 监听指针变化, 按事件 revision 取回 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
+pemcast 是一个从 etcd 拉取 TLS 证书的本地 agent, 同时提供 v5 staged publisher. `pemcast tools pack` 从证书内容计算 content-addressed generation, 并生成 deterministic bundle 与 metadata; `pemcast publish` 先 stage immutable bundle, 再用 active pointer 的 value + ModRevision CAS 提交发布. pemcast agent 监听指针变化, 按事件 revision 取回 bundle, 校验 SHA-256 与证书/私钥匹配关系, 然后在本地生成不可变 release 并原子切换 `current` symlink. 应用始终读取稳定路径, hook 在切换成功后触发服务重载.
 
 ```mermaid
 flowchart LR
-    pack["pemcast pack"] --> artifacts["bundle.json + metadata.json"]
+    pack["pemcast tools pack"] --> artifacts["bundle.json + metadata.json"]
     artifacts --> publish["pemcast publish"]
     publish -->|"stage immutable bundle"| etcd[("etcd")]
     publish -->|"active pointer CAS"| etcd
@@ -53,7 +53,7 @@ etcd 认证使用单个 `username:password` 值, 按第一个冒号切分, 密�
 本地打包:
 
 ```bash
-pemcast pack \
+pemcast tools pack \
   --etcd-prefix /pemcast \
   --target nginx \
   --certificate fullchain.pem \
@@ -71,6 +71,34 @@ pemcast pack \
 ```
 
 `pack` 不访问 etcd. `bundle.json` 与 `stage.txn` 包含私钥, 文件权限为 0600; pack 目录只能保存在受限存储中.
+
+### 本地 seed
+
+`seed` 用于自引用消费者的首装和显式救援. 它读取一个完整 v5 pack, 按 agent 配置中的 target 校验 prefix, target, digest, TLS pair, mapping 和有效期, 然后在不访问 etcd 的情况下创建本地 content-addressed release 并原子切换 `current`:
+
+```bash
+pemcast \
+  --config config/config.yaml \
+  tools \
+  seed \
+  --target nginx \
+  --pack-dir /secure/tmp/nginx-pack
+```
+
+seed 不写 agent state, 也不改变远端 active pointer. 这允许先为 etcd 准备证书目录, 再启动 etcd 与 agent. agent 看到远端 pointer 缺失且 `delete-policy: retain` 时会保留本地 release 并继续 watch; 后续 publish 同一 generation 时本地 release 不变, agent 只补写 state.
+
+如果本地 `current` 已经指向另一个 digest, seed 默认拒绝. 只在明确的人工救援场景使用:
+
+```bash
+pemcast \
+  --config config/config.yaml \
+  tools \
+  seed --force \
+  --target nginx \
+  --pack-dir /secure/tmp/nginx-rescue-pack
+```
+
+`--force` 只允许替换已存在的不同本地 release, 不跳过 pack 校验, target 校验或 TLS 校验. 运行中的 agent 持有 output root lock, 因此救援时应先停止 agent, seed 后完成远端 publish, 再启动 agent.
 
 使用 native publish 发布:
 
@@ -184,7 +212,7 @@ docker run --rm --platform linux/amd64 \
   --volume "${CERTBOT_OUTPUT_DIR}/cert:/certs:ro" \
   --volume "${_work}:/work" \
   "${_image}" \
-  pemcast pack \
+  pemcast tools pack \
     --etcd-prefix /pemcast \
     --target nginx \
     --certificate /certs/fullchain.pem \
@@ -215,7 +243,7 @@ PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
 pemcast publish --pack-dir /secure/archive/nginx-pack-sha256-old
 ```
 
-如果旧 pack 目录没有保留, 使用当时完全相同的证书和私钥重新 `pemcast pack`; deterministic generation 与 bundle bytes 会相同. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
+如果旧 pack 目录没有保留, 使用当时完全相同的证书和私钥重新 `pemcast tools pack`; deterministic generation 与 bundle bytes 会相同. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
 
 ## v4 到 v5 破坏式切换
 
@@ -255,8 +283,9 @@ pemcast agent --once
 pemcast agent --once --dry-run
 pemcast config example
 pemcast config validate
-pemcast pack
+pemcast tools pack
 pemcast publish
+pemcast tools seed
 pemcast status --json
 pemcast version
 ```
@@ -287,6 +316,7 @@ go test -race ./...
 go run ./cmd/pemcast --help
 go run ./cmd/pemcast --config config/config.yaml config validate
 bash scripts/integration-etcd.sh
+bash scripts/integration-etcd-seed.sh
 ```
 
 GitHub CI 会在 push 和 pull request 上运行 test, vet, race 和真实 etcd 3.7.2 集成测试. `config/config.example.yaml` 由 `internal/config` 测试生成. 修改配置 schema 后运行 `go test ./internal/config`, 并提交更新后的示例文件.
