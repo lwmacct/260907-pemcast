@@ -134,7 +134,21 @@ v6 允许存在未被 active pointer 引用的孤儿 bundle. 这是设计结果,
 
 etcd CAS transaction 的 success response 是 publish 的权威提交判定. CAS 成功后, 另一个合法发布可能立即覆盖 active pointer; 这不会使先前的成功发布变成失败.
 
-发布失败或并发冲突时可能留下已 stage 的 bundle, 可以保留给后续重试或由外部策略清理. active generation 对应的 bundle 必须永远保留.
+发布失败或并发冲突时可能留下已 stage 的 bundle, 可以保留给后续重试或由 `pemcast prune` 清理. active generation 对应的 bundle 必须永远保留.
+
+## 历史 bundle 清理
+
+`pemcast prune --dry-run` 是纯读操作. 它扫描一个 prefix 的 bundle keys, 逐个 exact-key 读取并完整验证 bundle, 然后报告 lifecycle 决策:
+
+1. active generation 永不删除.
+2. `trust` bundle 不按证书 `NotAfter` 自动判断, 跳过.
+3. target 缺少 active pointer 时跳过, 要求人工确认.
+4. identity bundle 取证书链中最早的 `NotAfter`, 再应用配置的 retention.
+5. 只有非 active 且已经超过 `earliest_not_after + retention` 的 identity bundle 才 eligible.
+6. `--delete` 对每个 candidate 使用 exact bundle key 删除, transaction 同时确认该 target active pointer 的 value 和 ModRevision 未变化.
+7. malformed 或 generation/digest 不一致的 bundle 使 prune 失败, 不自动删除.
+
+该设计不使用 etcd lease: bundle 单独过期会造成 dangling pointer, pointer 与 bundle 一起过期会破坏 active generation 必须保留的不变量. 证书 artifact 是独立的重放和排障通道, 其保留策略不由远端 bundle prune 决定.
 
 ## v5 到 v6 upgrade
 
@@ -215,6 +229,7 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/publisher`: v6 pack 的 immutable staging 与 active pointer CAS 状态机.
 - `internal/upgrade`: v5-to-v6 snapshot, preflight, source-aware staged commit, postverify 和 optional old-prefix cleanup.
 - `internal/upgrade/legacy`: 当前二进制的 canonical v5 decoder/converter; v6-to-v7 一次性二进制直接替换为 v6 decoder/converter.
+- `internal/prune`: 非 active identity bundle 的过期报告, retention 判断和条件 exact-key 清理.
 - `internal/seed`: 从已验证 v6 pack 离线构建本地 release 的首装与显式救援命令.
 - `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
@@ -225,5 +240,6 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `scripts/integration-etcd.sh`: 真实 etcd 3.7.2 auth/RBAC/publish/agent 集成测试.
 - `scripts/integration-etcd-seed.sh`: 真实 TLS etcd 的 seed 首装, watch 更新和显式救援集成测试.
 - `scripts/integration-etcd-upgrade.sh`: 真实 etcd 的 v5-to-v6 upgrade, agent 验证和 old-prefix cleanup 集成测试.
+- `scripts/integration-etcd-prune.sh`: 真实 etcd 的 prune dry-run, 条件删除, active/trust 保护和 agent 健康集成测试.
 
-已知边界: watch 模式与真实 etcd 的集成测试仍待补充, 远端历史 generation 清理由外部策略负责.
+已知边界: watch 模式与真实 etcd 的集成测试仍待补充.

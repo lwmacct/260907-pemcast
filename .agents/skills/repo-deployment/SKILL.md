@@ -1,6 +1,6 @@
 ---
 name: repo-deployment
-description: "配置和运行 pemcast, 用 pack 加 publish 发布或回滚 content-addressed etcd certificate bundle, 执行 v5 到 v6 upgrade, 执行 dry-run 校验, 查看本地状态, 诊断启用或 reload-hook 失败. 不用于内部实现修改."
+description: "配置和运行 pemcast, 用 pack 加 publish 发布或回滚 content-addressed etcd certificate bundle, 执行 v5 到 v6 upgrade, 执行 prune dry-run 或显式清理, 执行 dry-run 校验, 查看本地状态, 诊断启用或 reload-hook 失败. 不用于内部实现修改."
 ---
 
 # pemcast 部署
@@ -12,6 +12,7 @@ description: "配置和运行 pemcast, 用 pack 加 publish 发布或回滚 cont
 - 使用 `agent.etcd.prefix` / `--etcd-prefix` 作为租户或环境 namespace: 阅读 [references/operation.md](references/operation.md). 一个 prefix 隔离一组 v6 targets; 不同租户使用不同 prefix 和不同 etcd users.
 - 创建, 发布, 校验或回滚 etcd v6 content-addressed generation: 阅读 [references/publishing.md](references/publishing.md).
 - 将一个 etcd prefix 的 canonical v5 active 数据升级到 v6, 或清理旧 v5 prefix: 阅读 [references/publishing.md](references/publishing.md) 和 [references/operation.md](references/operation.md).
+- 报告或清理非 active 的过期 identity bundle: 阅读 [references/publishing.md](references/publishing.md).
 - 需要应急或审计时使用手动 etcdctl helper: 阅读 [references/publishing.md](references/publishing.md), 并运行 [scripts/publish-v6.sh](scripts/publish-v6.sh).
 - 涉及生产部署或 etcd mutation 时, 先确认确切目标环境和请求的变更. 优先使用 `agent --once --dry-run` 作为非写入验证步骤.
 

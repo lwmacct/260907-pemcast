@@ -13,6 +13,7 @@ import (
 
 	agentcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/agent"
 	configcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/config"
+	prunecmd "github.com/lwmacct/260907-pemcast/internal/appcmd/prune"
 	publishcmd "github.com/lwmacct/260907-pemcast/internal/appcmd/publish"
 	statuscmd "github.com/lwmacct/260907-pemcast/internal/appcmd/status"
 	toolscmd "github.com/lwmacct/260907-pemcast/internal/appcmd/tools"
@@ -29,7 +30,8 @@ func main() {
 		Version: version.AppVersion,
 		Commands: []*cli.Command{
 			agentcmd.Command, configcmd.Command, publishcmd.Command,
-			statuscmd.Command, toolscmd.Command, upgradecmd.Command, version.Command,
+			statuscmd.Command, toolscmd.Command, upgradecmd.Command,
+			prunecmd.Command, version.Command,
 		},
 	}
 	config.Manager.MustConfigure(app)

@@ -301,6 +301,10 @@ const PublishEtcdUserTemplate = `${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}`
 // broad publisher and generic etcdctl fallbacks.
 const UpgradeEtcdUserTemplate = `${ETCDCTL_USER_UPGRADE:-${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}}`
 
+// PruneEtcdUserTemplate prefers a dedicated lifecycle credential before the
+// broad publisher and generic etcdctl fallbacks.
+const PruneEtcdUserTemplate = `${ETCDCTL_USER_PRUNE:-${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}}`
+
 // LoadCommand loads the normal file and environment configuration sources.
 func LoadCommand(ctx context.Context, root *cli.Command) (*Config, error) {
 	sources := make([]cfgm.Source, 0, 2)

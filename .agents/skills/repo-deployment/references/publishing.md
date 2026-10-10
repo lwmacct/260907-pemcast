@@ -112,6 +112,31 @@ upgrade 只迁移 v5 active pointer 指向的 bundle, 不迁移历史 generation
 
 默认保留 `/prefix/v5/` 作为回滚窗口. 只有 postverify 全部通过并显式提供 `--delete-old-v5 --yes` 时才删除, 且范围精确为 `/prefix/v5/`. 删除前必须停止或禁用旧 v5 publisher; 仍在 watch v5 的旧客户端会收到 delete event, 不会自动切换到 v6.
 
+## 历史 bundle prune
+
+先使用纯读报告观察非 active identity bundle:
+
+```bash
+PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
+PEMCAST_AGENT_ETCD_PREFIX='/pemcast/tenants/example' \
+ETCDCTL_USER_PRUNE='prune-admin:<password>' \
+pemcast prune \
+  --retention 720h \
+  --dry-run
+```
+
+`retention` 从 identity chain 中最早过期的证书开始计算. active generation 和 trust bundle 永不自动删除; target 缺少 active pointer 时也跳过. 证书 artifact 是重放和排障材料, 其保留策略不由这个命令决定.
+
+确认报告后才可显式执行:
+
+```bash
+pemcast prune \
+  --retention 720h \
+  --delete
+```
+
+删除是 exact bundle key 加 active pointer value+ModRevision 条件事务, 不是 prefix delete. 并发 active 变化时命令失败并要求重试.
+
 ## 手动 etcdctl fallback
 
 仅在应急, 审计或明确不使用 Go client 时使用:
@@ -170,5 +195,5 @@ pemcast publish --pack-dir /secure/archive/nginx-pack-sha256-old
 - 不手工指定或复用 generation 名.
 - 不绕过 `pemcast publish` 或手动 helper 直接写 active pointer, 除非正在处理已确认的 etcd 故障.
 - pack 目录包含私钥 bundle, 只能存放在 0700 目录和受限存储中.
-- 远端历史 bundle 清理由独立运维策略负责, 必须永远保留 active generation.
+- 远端历史 bundle 使用 `pemcast prune` 显式清理; 必须永远保留 active generation, 且不按证书过期时间自动清理 trust bundle.
 - pemcast 镜像不包含 etcdctl 或 jq; 手动 helper 由执行环境自行提供依赖.

@@ -132,6 +132,43 @@ publish 读取 pack 后独立重算 encoded hash, 文件 hash, semantic whole di
 
 bundle stage 可能留下未被引用的孤儿 bundle; 这不产生消费者事件, 也不会改变本地证书. 只有 pointer CAS 成功才是发布 commit point.
 
+### 历史 bundle 清理
+
+`pemcast prune` 用于观察或清理已经失去回滚价值的非 active identity bundle. 它不使用 etcd lease, 不修改 active pointer, 也不清理本地 release, state 或 Docker image.
+
+先执行纯读报告:
+
+```bash
+PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
+PEMCAST_AGENT_ETCD_PREFIX='/pemcast/tenants/example' \
+ETCDCTL_USER_PRUNE='prune-admin:<password>' \
+pemcast prune \
+  --retention 720h \
+  --dry-run
+```
+
+`--retention 720h` 表示 identity chain 中最早过期的证书再保留 30 天. 未过期, 尚在宽限期内, active, trust 和没有 active pointer 的 target 都不会删除.
+
+确认报告后显式执行:
+
+```bash
+pemcast prune \
+  --retention 720h \
+  --delete
+```
+
+清理规则:
+
+- active generation 永不删除.
+- 只处理 `tls-server` 和 `tls-client` identity bundle.
+- `trust` bundle 不按证书 `NotAfter` 自动判断, 默认跳过.
+- bundle 的最早 `NotAfter` 来自证书内容, 不写入额外 metadata 或 sidecar key.
+- 删除使用 exact bundle key, 并在 transaction 中确认 active pointer 的 value + ModRevision 未变化.
+- malformed bundle 使命令失败, 不自动删除.
+- `--dry-run` 零写入.
+
+证书 artifact 的保留策略与 etcd bundle 生命周期无关. 在 pemcast 尚不稳定或可能重构的阶段, certbot source/output/pack artifact 是重放和排障材料, 不应为了清理 etcd 而缩短保留期.
+
 ### v5 到 v6 upgrade
 
 `pemcast upgrade` 是与 `publish` 平级的在线 etcd 管理命令, 只支持上一个版本 `v5` 到当前版本 `v6`. 它不迁移 v4 及更早数据, 不迁移 v5 历史 bundle, 也不修改 etcd users/roles.
@@ -348,6 +385,7 @@ pemcast config validate
 pemcast tools pack
 pemcast publish
 pemcast tools seed
+pemcast prune --dry-run
 pemcast status --json
 pemcast upgrade --dry-run
 pemcast version

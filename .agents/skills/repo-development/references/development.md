@@ -12,6 +12,7 @@ go run ./cmd/pemcast --config config/config.yaml config validate
 go run ./cmd/pemcast --config config/config.yaml status --json
 bash scripts/integration-etcd.sh
 bash scripts/integration-etcd-upgrade.sh
+bash scripts/integration-etcd-prune.sh
 ```
 
 GitHub CI 会在 push 和 pull request 上运行 test, vet, race 和真实 etcd 3.7.2 集成测试. 本地集成脚本会启动临时 etcd 容器, 并要求 Docker, etcdctl, jq 和 openssl.
@@ -42,6 +43,7 @@ go test ./internal/config
 - pack: 保持本地 key pair 校验, content-addressed generation, deterministic canonical bundle, 安全输出目录, metadata 不暴露私钥, 严格 pack 读取与写前校验, 以及可由 bundle 重建且与 bundle 一致的 etcdctl stage transaction.
 - publisher: 保持 `publish --pack-dir` 的独立 pack 校验, prefix/keyspace 校验, immutable bundle staging, existing bundle exact match 和 active pointer value+ModRevision CAS. etcd transaction success 是唯一提交判定, 不做会被后续合法发布干扰的 post-CAS read-back. 手动 etcdctl helper 只作为 repo-deployment skill 的 fallback, 不进入产品镜像.
 - upgrade: 保持 canonical v5 active-only 迁移, historical v5 digest 校验, 显式 type map, v6 semantic 重建, immutable staging, source v5 pointer value+ModRevision 参与 destination CAS, postverify 后才可精确删除 `/v5/`, 且 dry-run 零写入. 旧协议 decoder 放在 `internal/upgrade/legacy`, 不进入 v6 runtime 包; 每个发布二进制只包含上一个版本到当前版本的迁移实现.
+- prune: 保持显式 lifecycle 命令, 不使用 etcd lease. dry-run 零写入; active 和 trust 永不自动删除; identity 取证书链最早 NotAfter 加 retention; 删除必须使用 exact bundle key 并确认 active pointer value+ModRevision 未变化; malformed bundle 失败而不是跳过.
 - seed: 保持离线语义, 复用 pack 和 target 校验, 获取 output root lock, 创建 deterministic release; 同 digest no-op, 不同 digest 必须显式 `--force`, 且永不写 agent state 或远端 pointer.
 - status: 保持只读, 不联系 etcd, 不创建目录, 不输出证书内容或凭据.
 
