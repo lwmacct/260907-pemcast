@@ -16,6 +16,7 @@ import (
 )
 
 const managedDirectory = ".pemcast"
+const stableLinkTmpSuffix = ".pemcast-tmp"
 
 // Result describes an active local release.
 type Result struct {
@@ -84,6 +85,9 @@ func (d *Deployer) Activate(material *bundle.Material, output config.Output) (Re
 		if err := verifyRelease(releaseDir, material, output); err != nil {
 			return Result{}, fmt.Errorf("verify active release: %w", err)
 		}
+		if err := updateStableLinks(output); err != nil {
+			return Result{}, fmt.Errorf("repair stable links: %w", err)
+		}
 		return Result{CurrentDir: currentDir}, nil
 	}
 	managedRoot := filepath.Join(output.Root, managedDirectory)
@@ -99,10 +103,65 @@ func (d *Deployer) Activate(material *bundle.Material, output config.Output) (Re
 	if err := switchSymlink(output.Root, output.CurrentLink, filepath.Join(managedDirectory, "releases", releaseName)); err != nil {
 		return Result{}, fmt.Errorf("activate release: %w", err)
 	}
+	if err := updateStableLinks(output); err != nil {
+		return Result{}, fmt.Errorf("update stable links: %w", err)
+	}
 	if err := pruneReleases(releasesRoot, releaseName, output.RetainReleases); err != nil {
 		return Result{}, fmt.Errorf("prune old releases: %w", err)
 	}
 	return Result{Changed: true, ReleaseDir: releaseDir, CurrentDir: currentDir}, nil
+}
+
+// updateStableLinks ensures each root-level mapped file has a symlink through
+// current. Links that are missing or point to the wrong target are atomically
+// replaced, which produces filesystem events for fsnotify-based consumers.
+// Correct existing links are left untouched, so unchanged activations produce
+// no extra events.
+func updateStableLinks(output config.Output) error {
+	type stableLink struct {
+		name   string
+		target string
+	}
+	var links []stableLink
+	for _, mapping := range output.Mappings {
+		local := filepath.FromSlash(mapping.Local)
+		if filepath.Dir(local) != "." {
+			continue
+		}
+		if local == output.CurrentLink {
+			continue
+		}
+		links = append(links, stableLink{
+			name:   local,
+			target: filepath.Join(output.CurrentLink, local),
+		})
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	sort.SliceStable(links, func(i, j int) bool {
+		return isPrivateKeyFile(links[i].name) && !isPrivateKeyFile(links[j].name)
+	})
+	for _, link := range links {
+		linkPath := filepath.Join(output.Root, link.name)
+		if existing, err := os.Readlink(linkPath); err == nil && existing == link.target {
+			continue
+		}
+		tmpPath := filepath.Join(output.Root, "."+link.name+stableLinkTmpSuffix)
+		_ = os.Remove(tmpPath)
+		if err := os.Symlink(link.target, tmpPath); err != nil {
+			return fmt.Errorf("create stable link staging %q: %w", tmpPath, err)
+		}
+		if err := os.Rename(tmpPath, linkPath); err != nil {
+			return fmt.Errorf("activate stable link %q: %w", linkPath, err)
+		}
+	}
+	return syncDirectory(output.Root)
+}
+
+func isPrivateKeyFile(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	return strings.Contains(base, "key") || strings.Contains(base, "priv")
 }
 
 func (d *Deployer) ensureRelease(releaseDir string, material *bundle.Material, output config.Output) error {

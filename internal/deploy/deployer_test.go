@@ -195,6 +195,94 @@ func TestActivateDoesNotPruneActiveRelease(t *testing.T) {
 	require.DirExists(t, filepath.Join(root, ".pemcast", "releases", "sha256-second"))
 }
 
+func TestActivateCreatesStableLinks(t *testing.T) {
+	root := t.TempDir()
+	output := config.Output{
+		Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
+		Mappings: []config.FileMapping{
+			{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: config.FileMode("0644")},
+			{Remote: "privkey.pem", Local: "privkey.pem", Mode: config.FileMode("0600")},
+			{Remote: "extra", Local: "nested/extra.pem", Mode: config.FileMode("0600")},
+		},
+	}
+	deployer := New()
+	_, err := deployer.Activate(&bundle.Material{
+		Digest: "digest", Files: map[string][]byte{
+			"fullchain.pem": []byte("cert"), "privkey.pem": []byte("key"), "extra": []byte("data"),
+		},
+	}, output)
+	require.NoError(t, err)
+
+	link, err := os.Readlink(filepath.Join(root, "fullchain.pem"))
+	require.NoError(t, err)
+	require.Equal(t, "current/fullchain.pem", link)
+	require.Equal(t, []byte("cert"), mustRead(t, filepath.Join(root, "fullchain.pem")))
+
+	link, err = os.Readlink(filepath.Join(root, "privkey.pem"))
+	require.NoError(t, err)
+	require.Equal(t, "current/privkey.pem", link)
+	require.Equal(t, []byte("key"), mustRead(t, filepath.Join(root, "privkey.pem")))
+
+	_, err = os.Lstat(filepath.Join(root, "nested"))
+	require.ErrorIs(t, err, os.ErrNotExist, "subdirectory mappings should not produce root-level links")
+}
+
+func TestActivateStableLinksIdempotent(t *testing.T) {
+	root := t.TempDir()
+	output := config.Output{
+		Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
+		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
+	}
+	deployer := New()
+	_, err := deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("first")}}, output)
+	require.NoError(t, err)
+
+	info1, err := os.Lstat(filepath.Join(root, "cert"))
+	require.NoError(t, err)
+
+	_, err = deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("first")}}, output)
+	require.NoError(t, err)
+
+	info2, err := os.Lstat(filepath.Join(root, "cert"))
+	require.NoError(t, err)
+	require.Equal(t, info1.ModTime(), info2.ModTime(), "unchanged digest should not replace existing correct link")
+}
+
+func TestActivateStableLinksRepairMissing(t *testing.T) {
+	root := t.TempDir()
+	output := config.Output{
+		Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
+		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
+	}
+	deployer := New()
+	_, err := deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("data")}}, output)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(root, "cert")))
+
+	_, err = deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("data")}}, output)
+	require.NoError(t, err)
+
+	link, err := os.Readlink(filepath.Join(root, "cert"))
+	require.NoError(t, err)
+	require.Equal(t, "current/cert", link)
+}
+
+func TestActivateStableLinksSkipsCurrentLinkName(t *testing.T) {
+	root := t.TempDir()
+	output := config.Output{
+		Root: root, CurrentLink: "cert", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
+		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
+	}
+	deployer := New()
+	_, err := deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("data")}}, output)
+	require.NoError(t, err)
+
+	link, err := os.Readlink(filepath.Join(root, "cert"))
+	require.NoError(t, err)
+	require.NotEqual(t, "cert/cert", link, "current-link name must not be shadowed by stable link")
+	require.Contains(t, link, "releases", "cert should remain the directory current-link")
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

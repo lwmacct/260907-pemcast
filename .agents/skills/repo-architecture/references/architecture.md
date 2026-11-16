@@ -195,6 +195,26 @@ release 先写入 staging directory, 按配置 mappings/modes 填充, 写入 `.p
 
 远端 generation 和本地 release 都由 digest 推导, 因此相同内容不会产生重复 release.
 
+#### Stable file links
+
+每次激活后, deployer 为 output root 下每个根级 mapped file 维护一个文件级 symlink:
+
+```text
+/etc/nginx/tls/
+├── fullchain.pem -> current/fullchain.pem
+└── privkey.pem -> current/privkey.pem
+```
+
+目录级 symlink 切换在 inotify 中不产生 mapped file 的事件, fsnotify 型消费者 (sing-box, Traefik, Envoy file-based SDS) 无法通过 `current/...` 路径检测更新. 根级文件级 symlink 的原子替换在 output root (真实目录) 内产生 Create 事件, 使这些消费者直接热加载, 不再需要复制文件的 hook. 已存在且 target 正确的 link 不会被重复替换, 因此未变化的激活不产生多余事件. 子目录 mapping 和与 current-link 同名的 mapping 不生成根级 link.
+
+消费者按自身重载机制选择路径:
+
+| 消费者类型 | 推荐路径 | 原因 |
+|---|---|---|
+| fsnotify 型 | 根级 `fullchain.pem` | symlink 替换触发 Create 事件 |
+| 每次握手读取型 | `current/fullchain.pem` 或根级 | 两者等价 |
+| 信号或重启型 | 任一路径 | hook 负责通知, 文件路径无关 |
+
 ### 容器与多消费者边界
 
 output root 是 node-local managed volume. pemcast agent 是该 volume 的唯一 writer, 应用容器是 reader. 应用必须挂载 output root 本身, 然后读取 `current/...`; 不能挂载 `current`, `current` 下的单个文件, 或使用 Kubernetes subPath 指向 `current`. 否则 container runtime 可能在启动时固定旧 release, 后续 symlink 切换无法反映到容器内.
