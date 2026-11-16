@@ -190,6 +190,43 @@ YAML
     test "$(jq -er '.targets[0].current.status' "${_work_dir}/status.json")" = "active"
     test "$(jq -er '.targets[0].current["local-digest"]' "${_work_dir}/status.json")" = "${_generation_b#sha256-}"
 
+    # Watch mode: agent runs continuously and reacts to pointer changes.
+    PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
+        PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
+        ETCDCTL_USER_AGENT='agent-integration:agent-integration-password' \
+        "${_binary}" --config "${_work_dir}/agent.yaml" agent \
+        >"${_work_dir}/watch-agent.log" 2>&1 &
+    _watch_pid=$!
+
+    # Wait for watch to establish.
+    for _i in $(seq 1 30); do
+        if grep -q 'certificate bundle activated\|agent started' "${_work_dir}/watch-agent.log" 2>/dev/null; then
+            break
+        fi
+        sleep 0.2
+    done
+
+    # Publish pack-a while agent is watching.
+    PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
+        PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
+        ETCDCTL_USER_PUBLISH='publisher-integration:publisher-integration-password' \
+        "${_binary}" publish --pack-dir "${_work_dir}/pack-a" >/dev/null
+
+    # Wait for watch agent to activate pack-a.
+    _deadline=$((SECONDS + 15))
+    while ((SECONDS < _deadline)); do
+        _watch_digest="$("${_binary}" --config "${_work_dir}/agent.yaml" status --json 2>/dev/null | jq -er '.targets[0].current["local-digest"] // empty' 2>/dev/null || true)"
+        if [[ "${_watch_digest}" == "${_generation_a#sha256-}" ]]; then
+            break
+        fi
+        sleep 0.3
+    done
+    kill "${_watch_pid}" 2>/dev/null || true
+    wait "${_watch_pid}" 2>/dev/null || true
+    test "${_watch_digest}" = "${_generation_a#sha256-}"
+    test "$(readlink "${_work_dir}/tls/current")" = \
+        ".pemcast/releases/sha256-${_generation_a#sha256-}"
+
     printf '%s\n' "integration ok: nginx ${_generation_b}"
 }
 
