@@ -80,7 +80,7 @@ __wait_file_value() {
     _expected="$2"
     _deadline="$((SECONDS + 10))"
     while ((SECONDS < _deadline)); do
-        if [[ -f "${_path}" ]] && [[ "$(jq -er '.targets[0].state.generation' "${_path}")" == "${_expected}" ]]; then
+        if [[ -f "${_path}" ]] && [[ "$(jq -er '.targets[0].current["local-digest"]' "${_path}")" == "${_expected#sha256-}" ]]; then
             return 0
         fi
         "${_binary}" --config "${_work_dir}/agent.yaml" status --json >"${_path}" 2>/dev/null || true
@@ -143,7 +143,6 @@ __main() {
 
     cat >"${_work_dir}/agent.yaml" <<YAML
 agent:
-  state-dir: ${_work_dir}/state
   etcd:
     endpoints: ["https://integration-invalid:2379"]
     prefix: /pemcast

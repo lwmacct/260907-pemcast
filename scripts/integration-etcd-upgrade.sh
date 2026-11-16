@@ -119,7 +119,6 @@ __init_rbac() {
 __write_agent_config() {
     cat >"${_work_dir}/agent.yaml" <<YAML
 agent:
-  state-dir: ${_work_dir}/state
   etcd:
     endpoints: ["http://127.0.0.1:${_etcd_port}"]
     prefix: /pemcast

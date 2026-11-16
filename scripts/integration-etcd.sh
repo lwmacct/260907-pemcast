@@ -80,7 +80,6 @@ __main() {
 
     cat >"${_work_dir}/agent.yaml" <<YAML
 agent:
-  state-dir: ${_work_dir}/state
   etcd:
     endpoints: ["http://integration-invalid:2379"]
     prefix: /pemcast
@@ -115,7 +114,6 @@ YAML
         seed --target nginx --pack-dir "${_work_dir}/pack-a" >/dev/null
     test "$(readlink "${_work_dir}/tls/current")" = \
         ".pemcast/releases/sha256-${_generation_a#sha256-}"
-    test ! -e "${_work_dir}/state/nginx.json"
 
     PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
         PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
@@ -130,7 +128,7 @@ YAML
         >"${_work_dir}/seeded-agent-once.log" 2>&1
     "${_binary}" --config "${_work_dir}/agent.yaml" status --json \
         >"${_work_dir}/seeded-status.json"
-    test "$(jq -er '.targets[0].state.generation' "${_work_dir}/seeded-status.json")" = "${_generation_a}"
+    test "$(jq -er '.targets[0].current.status' "${_work_dir}/seeded-status.json")" = "active"
     test "$(jq -er '.targets[0].current["local-digest"]' "${_work_dir}/seeded-status.json")" = "${_generation_a#sha256-}"
 
     PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
@@ -189,7 +187,7 @@ YAML
         "${_binary}" --config "${_work_dir}/agent.yaml" agent --once \
         >"${_work_dir}/agent-once.log" 2>&1
     "${_binary}" --config "${_work_dir}/agent.yaml" status --json >"${_work_dir}/status.json"
-    test "$(jq -er '.targets[0].state.generation' "${_work_dir}/status.json")" = "${_generation_b}"
+    test "$(jq -er '.targets[0].current.status' "${_work_dir}/status.json")" = "active"
     test "$(jq -er '.targets[0].current["local-digest"]' "${_work_dir}/status.json")" = "${_generation_b#sha256-}"
 
     printf '%s\n' "integration ok: nginx ${_generation_b}"
