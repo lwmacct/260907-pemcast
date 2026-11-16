@@ -17,7 +17,6 @@ func dryRunConfig(t *testing.T) config.Config {
 	t.Helper()
 
 	cfg := config.ExampleConfig()
-	cfg.Agent.StateDir = filepath.Join(t.TempDir(), "state")
 	cfg.Agent.DryRun = true
 	cfg.Agent.Etcd.Endpoints = []string{"http://127.0.0.1:1"}
 	cfg.Agent.Etcd.DialTimeout = 10 * time.Millisecond
@@ -33,18 +32,16 @@ func TestNewDryRunDoesNotCreateLocalDirectories(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, application.Close()) }()
 
-	require.NoDirExists(t, cfg.Agent.StateDir)
 	require.NoDirExists(t, cfg.Agent.Targets[0].Output.Root)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	_ = application.Run(ctx)
 
-	require.NoDirExists(t, cfg.Agent.StateDir)
 	require.NoDirExists(t, cfg.Agent.Targets[0].Output.Root)
 }
 
-func TestNewCreatesStateDirectoryOutsideDryRun(t *testing.T) {
+func TestNewCreatesOutputDirectoriesOutsideDryRun(t *testing.T) {
 	cfg := dryRunConfig(t)
 	cfg.Agent.DryRun = false
 
@@ -52,12 +49,9 @@ func TestNewCreatesStateDirectoryOutsideDryRun(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, application.Close()) }()
 
-	require.DirExists(t, cfg.Agent.StateDir)
 	require.FileExists(t, filepath.Join(cfg.Agent.Targets[0].Output.Root, ".pemcast", "agent.lock"))
 
-	stateInfo, err := os.Stat(cfg.Agent.StateDir)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o700), stateInfo.Mode().Perm())
 	rootInfo, err := os.Stat(cfg.Agent.Targets[0].Output.Root)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o700), rootInfo.Mode().Perm())
@@ -74,7 +68,6 @@ func TestNewRejectsCompetingProcessForSameOutputRoot(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, first.Close()) }()
 
-	cfg.Agent.StateDir = filepath.Join(t.TempDir(), "second-state")
 	_, err = New(cfg, slog.New(slog.DiscardHandler))
 	require.ErrorContains(t, err, "already managed")
 

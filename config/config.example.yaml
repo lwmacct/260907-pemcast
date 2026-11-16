@@ -5,7 +5,6 @@
 agent:
   once: false # synchronize once and exit
   dry-run: false # validate changes without writing files or running hooks
-  state-dir: "/var/lib/pemcast" # local target state directory
   max-concurrent: 4 # maximum targets reconciled concurrently
 
   # etcd client configuration

@@ -100,7 +100,6 @@ func writeConfiguration(t *testing.T, root string) string {
 
 	configurationPath := filepath.Join(t.TempDir(), "config.yaml")
 	configuration := fmt.Sprintf(`agent:
-  state-dir: %s/state
   etcd:
     endpoints: ["http://127.0.0.1:1"]
     prefix: /pemcast
@@ -123,7 +122,7 @@ func writeConfiguration(t *testing.T, root string) string {
       validation:
         reject-expired: true
         minimum-validity: 1h
-`, filepath.Join(root, "state"), root)
+`, root)
 	require.NoError(t, os.WriteFile(configurationPath, []byte(configuration), 0o600))
 	return configurationPath
 }

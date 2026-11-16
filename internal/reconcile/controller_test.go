@@ -25,7 +25,6 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/deploy"
 	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
 	"github.com/lwmacct/260907-pemcast/internal/hook"
-	"github.com/lwmacct/260907-pemcast/internal/state"
 )
 
 type fetchCall struct {
@@ -142,55 +141,6 @@ func (r *fakeHookRunner) events() []hook.Event {
 	return append([]hook.Event(nil), r.calls...)
 }
 
-type fakeStateStore struct {
-	mu        sync.Mutex
-	targets   map[string]state.Target
-	loadErr   error
-	saveErr   error
-	loadCalls int
-	saveCalls int
-}
-
-func newFakeState(targets map[string]state.Target) *fakeStateStore {
-	return &fakeStateStore{targets: targets}
-}
-
-func (s *fakeStateStore) Load(targetID string) (state.Target, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.loadCalls++
-	if s.loadErr != nil {
-		return state.Target{}, s.loadErr
-	}
-	return s.targets[targetID], nil
-}
-
-func (s *fakeStateStore) Save(targetID string, target state.Target) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.saveCalls++
-	if s.saveErr != nil {
-		return s.saveErr
-	}
-	if s.targets == nil {
-		s.targets = make(map[string]state.Target)
-	}
-	s.targets[targetID] = target
-	return nil
-}
-
-func (s *fakeStateStore) target(id string) state.Target {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.targets[id]
-}
-
-func (s *fakeStateStore) counts() (int, int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadCalls, s.saveCalls
-}
-
 func testCertificatePEM(t *testing.T) ([]byte, []byte) {
 	t.Helper()
 
@@ -258,16 +208,15 @@ func testTarget(id string) config.Target {
 	}
 }
 
-func newTestController(source Source, deployer Deployer, hooks HookRunner, store StateStore, cfg config.Agent) *Controller {
-	return New(source, deployer, hooks, store, cfg, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
+func newTestController(source Source, deployer Deployer, hooks HookRunner, cfg config.Agent) *Controller {
+	return New(source, deployer, hooks, cfg, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
 }
 
 func TestReconcileFetchFailureDoesNotTouchLocalState(t *testing.T) {
 	source := &fakeSource{err: errors.New("remote unavailable")}
 	deployer := &fakeDeployer{}
 	hooks := &fakeHookRunner{}
-	store := newFakeState(nil)
-	controller := newTestController(source, deployer, hooks, store, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testAgentConfig())
 
 	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
 	if err == nil || !errors.Is(err, source.err) {
@@ -275,9 +224,6 @@ func TestReconcileFetchFailureDoesNotTouchLocalState(t *testing.T) {
 	}
 	if deployer.count() != 0 || hooks.count() != 0 {
 		t.Fatalf("deploy/hooks ran after fetch failure: deploy=%d hooks=%d", deployer.count(), hooks.count())
-	}
-	if loads, saves := store.counts(); loads != 0 || saves != 0 {
-		t.Fatalf("state touched after fetch failure: loads=%d saves=%d", loads, saves)
 	}
 }
 
@@ -287,8 +233,7 @@ func TestReconcileValidationFailureStopsBeforeState(t *testing.T) {
 	source := &fakeSource{material: material}
 	deployer := &fakeDeployer{}
 	hooks := &fakeHookRunner{}
-	store := newFakeState(nil)
-	controller := newTestController(source, deployer, hooks, store, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testAgentConfig())
 
 	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
 	if err == nil {
@@ -297,19 +242,15 @@ func TestReconcileValidationFailureStopsBeforeState(t *testing.T) {
 	if deployer.count() != 0 || hooks.count() != 0 {
 		t.Fatalf("deploy/hooks ran after validation failure: deploy=%d hooks=%d", deployer.count(), hooks.count())
 	}
-	if loads, saves := store.counts(); loads != 0 || saves != 0 {
-		t.Fatalf("state touched after validation failure: loads=%d saves=%d", loads, saves)
-	}
 }
 
 func TestReconcileDryRunDoesNotWrite(t *testing.T) {
 	source := &fakeSource{material: testMaterial(t, "digest")}
 	deployer := &fakeDeployer{}
 	hooks := &fakeHookRunner{}
-	store := newFakeState(nil)
 	cfg := testAgentConfig()
 	cfg.DryRun = true
-	controller := newTestController(source, deployer, hooks, store, cfg)
+	controller := newTestController(source, deployer, hooks, cfg)
 
 	if err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -317,37 +258,7 @@ func TestReconcileDryRunDoesNotWrite(t *testing.T) {
 	if deployer.count() != 0 || hooks.count() != 0 {
 		t.Fatalf("dry-run deployed or ran hook: deploy=%d hooks=%d", deployer.count(), hooks.count())
 	}
-	if loads, saves := store.counts(); loads != 0 || saves != 0 {
-		t.Fatalf("dry-run touched state: loads=%d saves=%d", loads, saves)
-	}
-	if len(store.targets) != 0 {
-		t.Fatalf("dry-run state was modified: %#v", store.targets)
-	}
-}
 
-func TestReconcileUpdatesMetadataForUnchangedDigest(t *testing.T) {
-	activatedAt := time.Now().Add(-time.Minute).UTC()
-	source := &fakeSource{material: testMaterial(t, "digest")}
-	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
-	hooks := &fakeHookRunner{}
-	store := newFakeState(map[string]state.Target{
-		"nginx": {Generation: "old", Digest: "old-digest", Revision: 20, ActivatedAt: activatedAt},
-	})
-	controller := newTestController(source, deployer, hooks, store, testAgentConfig())
-
-	if err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42); err != nil {
-		t.Fatalf("Reconcile() error = %v", err)
-	}
-	if deployer.count() != 1 || hooks.count() != 0 {
-		t.Fatalf("unexpected deploy/hook counts: deploy=%d hooks=%d", deployer.count(), hooks.count())
-	}
-	got := store.target("nginx")
-	if got.Generation != "generation-1" || got.Digest != "digest" || got.Revision != 42 {
-		t.Fatalf("unchanged release metadata was not updated: %#v", got)
-	}
-	if !got.ActivatedAt.Equal(activatedAt) {
-		t.Fatalf("ActivatedAt changed for unchanged release: got %v want %v", got.ActivatedAt, activatedAt)
-	}
 }
 
 func TestReconcileChangedDigestRunsHookAndSavesState(t *testing.T) {
@@ -356,8 +267,7 @@ func TestReconcileChangedDigestRunsHookAndSavesState(t *testing.T) {
 		Changed: true, ReleaseDir: "/tmp/pemcast/nginx/.pemcast/releases/digest", CurrentDir: "/tmp/pemcast/nginx/current",
 	}}
 	hooks := &fakeHookRunner{}
-	store := newFakeState(nil)
-	controller := newTestController(source, deployer, hooks, store, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testAgentConfig())
 
 	if err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -373,10 +283,7 @@ func TestReconcileChangedDigestRunsHookAndSavesState(t *testing.T) {
 	if event.ChangedFiles[0] != "fullchain.pem" || event.ChangedFiles[1] != "privkey.pem" {
 		t.Fatalf("unexpected changed files: %#v", event.ChangedFiles)
 	}
-	got := store.target("nginx")
-	if got.Generation != "generation-1" || got.Digest != "digest" || got.Revision != 42 || got.HookError != "" {
-		t.Fatalf("unexpected saved state: %#v", got)
-	}
+
 }
 
 func TestReconcileRecordsHookFailureAndRetriesWithoutRewritingRelease(t *testing.T) {
@@ -387,16 +294,14 @@ func TestReconcileRecordsHookFailureAndRetriesWithoutRewritingRelease(t *testing
 	}}
 	hookFailure := errors.New("reload failed")
 	hooks := &fakeHookRunner{errs: []error{hookFailure, nil}}
-	store := newFakeState(nil)
-	controller := newTestController(source, deployer, hooks, store, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testAgentConfig())
 
 	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
 	if err == nil || !errors.Is(err, hookFailure) {
 		t.Fatalf("first Reconcile() error = %v, want %v", err, hookFailure)
 	}
-	failed := store.target("nginx")
-	if failed.HookError == "" || failed.Generation != "generation-1" {
-		t.Fatalf("hook failure was not recorded: %#v", failed)
+	if _, ok := controller.hookErrs.Load("nginx"); !ok {
+		t.Fatal("hook failure was not recorded in memory")
 	}
 
 	deployer.result = current
@@ -409,39 +314,22 @@ func TestReconcileRecordsHookFailureAndRetriesWithoutRewritingRelease(t *testing
 	if hooks.count() != 2 {
 		t.Fatalf("hook calls after retry=%d, want 2", hooks.count())
 	}
-	if got := store.target("nginx"); got.HookError != "" {
-		t.Fatalf("hook error was not cleared: %#v", got)
-	}
-}
-
-func TestReconcileReturnsStateSaveFailure(t *testing.T) {
-	source := &fakeSource{material: testMaterial(t, "digest")}
-	deployer := &fakeDeployer{result: deploy.Result{Changed: true, CurrentDir: "/tmp/pemcast/nginx/current"}}
-	hooks := &fakeHookRunner{}
-	saveErr := errors.New("disk full")
-	store := &fakeStateStore{saveErr: saveErr}
-	controller := newTestController(source, deployer, hooks, store, testAgentConfig())
-
-	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
-	if err == nil || !errors.Is(err, saveErr) {
-		t.Fatalf("Reconcile() error = %v, want %v", err, saveErr)
-	}
-	if hooks.count() != 1 {
-		t.Fatalf("hook did not run before state save: calls=%d", hooks.count())
+	if _, ok := controller.hookErrs.Load("nginx"); ok {
+		t.Fatal("hook error was not cleared from memory")
 	}
 }
 
 func TestReconcileSnapshotDeletePolicies(t *testing.T) {
 	cfg := testAgentConfig(testTarget("retain"))
 	cfg.Targets[0].DeletePolicy = "retain"
-	controller := newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, newFakeState(nil), cfg)
+	controller := newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, cfg)
 	if err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}}); err != nil {
 		t.Fatalf("retain policy returned error: %v", err)
 	}
 
 	cfg = testAgentConfig(testTarget("fail"))
 	cfg.Targets[0].DeletePolicy = "fail"
-	controller = newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, newFakeState(nil), cfg)
+	controller = newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, cfg)
 	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}})
 	if err == nil || !strings.Contains(err.Error(), "active pointer was deleted") {
 		t.Fatalf("fail policy error = %v, want deletion error", err)
@@ -451,8 +339,7 @@ func TestReconcileSnapshotDeletePolicies(t *testing.T) {
 func TestReconcileSerializesSameTarget(t *testing.T) {
 	source := &fakeSource{material: testMaterial(t, "digest"), delay: 10 * time.Millisecond}
 	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
-	store := newFakeState(nil)
-	controller := newTestController(source, deployer, &fakeHookRunner{}, store, testAgentConfig())
+	controller := newTestController(source, deployer, &fakeHookRunner{}, testAgentConfig())
 
 	var wg sync.WaitGroup
 	for range 4 {
@@ -477,7 +364,7 @@ func TestReconcileSnapshotLimitsGlobalConcurrency(t *testing.T) {
 	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
 	cfg := testAgentConfig(testTarget("one"), testTarget("two"), testTarget("three"))
 	cfg.MaxConcurrent = 1
-	controller := newTestController(source, deployer, &fakeHookRunner{}, newFakeState(nil), cfg)
+	controller := newTestController(source, deployer, &fakeHookRunner{}, cfg)
 
 	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{
 		Active: map[string]string{"one": "g", "two": "g", "three": "g"},

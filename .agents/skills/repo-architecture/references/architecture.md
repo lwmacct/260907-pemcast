@@ -10,7 +10,7 @@ pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast too
 
 ## 运行流程
 
-启动时校验配置. 非 dry-run agent 按排序获取每个 output root 的排他文件锁, 懒创建 state directory, 构造 etcd client, 并组装 reconcile controller. dry-run 不创建 state directory, 不读取 state, 不获取 output root 锁.
+启动时校验配置. 非 dry-run agent 按排序获取每个 output root 的排他文件锁, 构造 etcd client, 并组装 reconcile controller. dry-run 不获取 output root 锁.
 
 `agent --once` 一次 range read 读取 active prefix 下全部 pointer, 得到同一个 revision 的 snapshot, 然后 reconcile 配置 target 的交集. 普通 agent 循环执行:
 
@@ -221,15 +221,14 @@ output root 是 node-local managed volume. pemcast agent 是该 volume 的唯一
 
 同一台设备上的多个应用容器可以共享同一个 output root. 它们都只读挂载 root, 并由一个本机 fan-out hook 依次重载. 如果不同消费者需要不同权限或不同重载策略, 应配置成不同 target 和不同 output root.
 
-hook 是本机服务控制适配器, 不是远端状态回报机制. 它必须运行在有权限控制目标服务的 namespace 中. host-level agent 可以直接调用 systemd, Docker 或 Podman; node agent container 需要显式挂载 hook 和对应 runtime 控制接口. local state 只服务本机 hook retry 和本地诊断, 不写入 etcd.
+hook 是本机服务控制适配器, 不是远端状态回报机制. 它必须运行在有权限控制目标服务的 namespace 中. host-level agent 可以直接调用 systemd, Docker 或 Podman; node agent container 需要显式挂载 hook 和对应 runtime 控制接口.
 
-## Hook 与 state
+## Hook
 
 hook 直接执行, 不经过 shell. 它获得固定 `PATH`, 显式放行环境变量和 `PEMCAST_*` event 变量, 并从 stdin 读取 JSON. timeout 时终止整个 process group. 失败输出在收集阶段限制为 4096 bytes.
 
-hook 在 symlink 切换后执行. 失败记录 `hook-error`; 后续 event 或 resync 会重试, 不重写未变化 release. hook 必须幂等.
+hook 在 symlink 切换后执行. 失败记录在进程内 `sync.Map`; 后续 event 或 resync 会重试, 不重写未变化 release. hook 必须幂等. agent 重启后内存 hook error 丢失, 但全量 snapshot reconcile 会重新执行 hook. 本地不再有 state 文件; output root 文件系统是唯一 truth.
 
-state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, rename 和 parent-directory fsync 写入.
 
 ## 包地图
 
@@ -254,7 +253,6 @@ state 是 `state-dir` 下的小 JSON 文件, 通过 temporary file, fsync, renam
 - `internal/reconcile`: orchestration, lock, concurrency 和 hook retry.
 - `internal/deploy`: output root lock, release 完整性, 原子 symlink, prune 和 fsync.
 - `internal/hook`: process group, 环境边界, 输出限额和 event schema.
-- `internal/state`: activation/hook state.
 - `internal/status`: 只读本地 target 状态.
 - `.agents/skills/repo-deployment/scripts/publish-v6.sh`: 手动 etcdctl staged publication fallback.
 - `scripts/integration-etcd.sh`: 真实 etcd 3.7.2 auth/RBAC/publish/agent 集成测试.

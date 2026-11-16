@@ -11,7 +11,6 @@ import (
 
 func TestValidateTarget(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Agent.StateDir = t.TempDir()
 	cfg.Agent.Targets = []Target{{
 		ID: "nginx", DeletePolicy: "retain",
 		Type: bundle.TypeTLSServer,
@@ -28,14 +27,12 @@ func TestValidateTarget(t *testing.T) {
 
 func TestValidateRejectsUncleanRoot(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Agent.StateDir = t.TempDir()
 	cfg.Agent.Targets = []Target{validTarget("nginx", filepath.Join(t.TempDir(), "tls")+string(filepath.Separator))}
 	require.ErrorContains(t, cfg.Validate(), "clean, absolute, non-root path")
 }
 
 func TestValidateRejectsInvalidHookEnvironmentName(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Agent.StateDir = t.TempDir()
 	target := validTarget("nginx", filepath.Join(t.TempDir(), "tls"))
 	target.Hook.PassEnvironment = []string{"BAD-NAME"}
 	cfg.Agent.Targets = []Target{target}
@@ -44,7 +41,6 @@ func TestValidateRejectsInvalidHookEnvironmentName(t *testing.T) {
 
 func TestValidateTargetTypesAndRequiredMappings(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Agent.StateDir = t.TempDir()
 	target := validTarget("client", filepath.Join(t.TempDir(), "client"))
 	target.Type = bundle.TypeTLSClient
 	target.Validation.ServerNames = []string{"example.com"}
@@ -72,7 +68,6 @@ func TestValidateTargetTypesAndRequiredMappings(t *testing.T) {
 func TestValidateRejectsOverlappingOutputRoots(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "tls")
 	cfg := DefaultConfig()
-	cfg.Agent.StateDir = t.TempDir()
 	cfg.Agent.Targets = []Target{
 		validTarget("one", parent),
 		validTarget("two", filepath.Join(parent, "nested")),

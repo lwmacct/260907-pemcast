@@ -7,12 +7,10 @@ import (
 
 	"github.com/lwmacct/260907-pemcast/internal/config"
 	"github.com/lwmacct/260907-pemcast/internal/deploy"
-	"github.com/lwmacct/260907-pemcast/internal/state"
 )
 
 type Report struct {
-	StateDir string         `json:"state-dir"`
-	Targets  []TargetStatus `json:"targets"`
+	Targets []TargetStatus `json:"targets"`
 }
 
 type TargetStatus struct {
@@ -20,9 +18,6 @@ type TargetStatus struct {
 	Type        string        `json:"type"`
 	OutputRoot  string        `json:"output-root"`
 	CurrentLink string        `json:"current-link"`
-	StateStatus string        `json:"state-status"`
-	State       state.Target  `json:"state"`
-	StateError  string        `json:"state-error,omitempty"`
 	Current     CurrentStatus `json:"current"`
 }
 
@@ -35,8 +30,7 @@ type CurrentStatus struct {
 }
 
 func Build(cfg config.Config) Report {
-	report := Report{StateDir: cfg.Agent.StateDir, Targets: make([]TargetStatus, 0, len(cfg.Agent.Targets))}
-	store, storeErr := state.New(cfg.Agent.StateDir)
+	report := Report{Targets: make([]TargetStatus, 0, len(cfg.Agent.Targets))}
 	deployer := deploy.New()
 
 	for _, target := range cfg.Agent.Targets {
@@ -47,31 +41,10 @@ func Build(cfg config.Config) Report {
 			CurrentLink: target.Output.CurrentLink,
 			Current:     CurrentStatus{Status: "unknown"},
 		}
-		if storeErr != nil {
-			item.StateStatus = "error"
-			item.StateError = storeErr.Error()
-		} else {
-			item.StateStatus, item.State, item.StateError = inspectState(store, target.ID)
-		}
 		item.Current = inspectCurrent(deployer, target.Output)
 		report.Targets = append(report.Targets, item)
 	}
 	return report
-}
-
-func inspectState(store *state.Store, targetID string) (string, state.Target, string) {
-	exists, err := store.Exists(targetID)
-	if err != nil {
-		return "error", state.Target{}, err.Error()
-	}
-	if !exists {
-		return "missing", state.Target{}, ""
-	}
-	saved, err := store.Load(targetID)
-	if err != nil {
-		return "error", state.Target{}, err.Error()
-	}
-	return "present", saved, ""
 }
 
 func inspectCurrent(deployer *deploy.Deployer, output config.Output) CurrentStatus {

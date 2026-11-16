@@ -15,7 +15,6 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/deploy"
 	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
 	"github.com/lwmacct/260907-pemcast/internal/hook"
-	"github.com/lwmacct/260907-pemcast/internal/state"
 )
 
 // Source is the remote capability needed by the controller.
@@ -33,19 +32,13 @@ type HookRunner interface {
 	Run(context.Context, config.Hook, hook.Event) error
 }
 
-// StateStore persists the last reconciliation state for each target.
-type StateStore interface {
-	Load(targetID string) (state.Target, error)
-	Save(targetID string, target state.Target) error
-}
-
 // Controller reconciles configured targets. Each target is serialized while
 // different targets may execute concurrently.
 type Controller struct {
 	source    Source
 	deployer  Deployer
 	hooks     HookRunner
-	state     StateStore
+	hookErrs  sync.Map
 	targets   map[string]config.Target
 	dryRun    bool
 	semaphore chan struct{}
@@ -53,13 +46,13 @@ type Controller struct {
 	logger    *slog.Logger
 }
 
-func New(source Source, deployer Deployer, hooks HookRunner, store StateStore, cfg config.Agent, logger *slog.Logger) *Controller {
+func New(source Source, deployer Deployer, hooks HookRunner, cfg config.Agent, logger *slog.Logger) *Controller {
 	targets := make(map[string]config.Target, len(cfg.Targets))
 	for _, target := range cfg.Targets {
 		targets[target.ID] = target
 	}
 	return &Controller{
-		source: source, deployer: deployer, hooks: hooks, state: store,
+		source: source, deployer: deployer, hooks: hooks,
 		targets: targets, dryRun: cfg.DryRun, semaphore: make(chan struct{}, cfg.MaxConcurrent), logger: logger,
 	}
 }
@@ -113,23 +106,12 @@ func (c *Controller) Reconcile(ctx context.Context, id, generation string, revis
 		c.logger.InfoContext(ctx, "bundle validated in dry-run mode", "target", id, "generation", generation, "digest", material.Digest)
 		return nil
 	}
-	previous, err := c.state.Load(id)
-	if err != nil {
-		return err
-	}
 	result, err := c.deployer.Activate(material, target.Output)
 	if err != nil {
 		return fmt.Errorf("deploy target %q: %w", id, err)
 	}
-	if !result.Changed && previous.HookError == "" {
-		if previous.Generation != generation || previous.Digest != material.Digest {
-			previous.Generation = generation
-			previous.Digest = material.Digest
-			previous.Revision = revision
-			if err := c.state.Save(id, previous); err != nil {
-				return err
-			}
-		}
+	_, hadHookErr := c.hookErrs.Load(id)
+	if !result.Changed && !hadHookErr {
 		return nil
 	}
 	changed := make([]string, 0, len(target.Output.Mappings))
@@ -141,21 +123,15 @@ func (c *Controller) Reconcile(ctx context.Context, id, generation string, revis
 		releaseDir = result.CurrentDir
 	}
 	event := hook.Event{
-		TargetID: id, Generation: generation, PreviousGeneration: previous.Generation,
+		TargetID: id, Generation: generation,
 		EtcdRevision: revision, ReleaseDir: releaseDir, CurrentDir: result.CurrentDir,
 		ChangedFiles: changed, BundleSHA256: material.Digest, ActivatedAt: time.Now(),
 	}
-	next := state.Target{Generation: generation, Digest: material.Digest, Revision: revision, ActivatedAt: event.ActivatedAt}
 	if err := c.hooks.Run(ctx, target.Hook, event); err != nil {
-		next.HookError = err.Error()
-		if saveErr := c.state.Save(id, next); saveErr != nil {
-			return fmt.Errorf("%w; save hook failure: %w", err, saveErr)
-		}
+		c.hookErrs.Store(id, err.Error())
 		return fmt.Errorf("run target %q hook: %w", id, err)
 	}
-	if err := c.state.Save(id, next); err != nil {
-		return err
-	}
+	c.hookErrs.Delete(id)
 	c.logger.InfoContext(ctx, "certificate bundle activated", "target", id, "type", target.Type, "generation", generation, "digest", material.Digest)
 	return nil
 }

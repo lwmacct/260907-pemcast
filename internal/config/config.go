@@ -30,7 +30,6 @@ type Config struct {
 type Agent struct {
 	Once          bool     `json:"once"           desc:"synchronize once and exit"`
 	DryRun        bool     `json:"dry-run"        desc:"validate changes without writing files or running hooks"`
-	StateDir      string   `json:"state-dir"      desc:"local target state directory"`
 	MaxConcurrent int      `json:"max-concurrent" desc:"maximum targets reconciled concurrently"`
 	Etcd          Etcd     `json:"etcd"           desc:"etcd client configuration"`
 	Watch         Watch    `json:"watch"          desc:"etcd watch and retry configuration"`
@@ -134,7 +133,6 @@ type Hook struct {
 func DefaultConfig() Config {
 	return Config{
 		Agent: Agent{
-			StateDir:      "/var/lib/pemcast",
 			MaxConcurrent: 4,
 			Etcd: Etcd{
 				Prefix:         DefaultEtcdPrefix,
@@ -197,9 +195,6 @@ func (c Config) Validate() error {
 // ValidateCommon checks settings shared by commands that use the agent's etcd
 // and protocol configuration, even when no local target is configured.
 func (a Agent) ValidateCommon() error {
-	if !filepath.IsAbs(a.StateDir) {
-		return fmt.Errorf("agent.state-dir must be absolute")
-	}
 	if len(a.Etcd.Endpoints) == 0 {
 		return fmt.Errorf("agent.etcd.endpoints is required")
 	}

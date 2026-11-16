@@ -12,7 +12,6 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/etcdsource"
 	"github.com/lwmacct/260907-pemcast/internal/hook"
 	"github.com/lwmacct/260907-pemcast/internal/reconcile"
-	"github.com/lwmacct/260907-pemcast/internal/state"
 )
 
 // Application owns the agent runtime and its dependencies.
@@ -31,18 +30,11 @@ func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	store, err := state.New(cfg.Agent.StateDir)
-	if err != nil {
-		return nil, err
-	}
 	var locks []*deploy.RootLock
+	var err error
 	if !cfg.Agent.DryRun {
 		locks, err = deploy.LockRoots(cfg.Agent.Targets)
 		if err != nil {
-			return nil, err
-		}
-		if err := store.Ensure(); err != nil {
-			closeRootLocks(locks)
 			return nil, err
 		}
 	}
@@ -51,7 +43,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
 		closeRootLocks(locks)
 		return nil, err
 	}
-	controller := reconcile.New(source, deploy.New(), hook.New(), store, cfg.Agent, logger)
+	controller := reconcile.New(source, deploy.New(), hook.New(), cfg.Agent, logger)
 	return &Application{config: cfg.Agent, source: source, controller: controller, locks: locks, logger: logger}, nil
 }
 

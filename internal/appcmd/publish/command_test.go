@@ -46,7 +46,6 @@ func runCommand(t *testing.T, packDir, etcdPrefix string) error {
 
 	configurationPath := filepath.Join(t.TempDir(), "config.yaml")
 	configuration := `agent:
-  state-dir: /tmp/pemcast-publish-cli
   etcd:
     endpoints: ["http://127.0.0.1:1"]
     prefix: /pemcast

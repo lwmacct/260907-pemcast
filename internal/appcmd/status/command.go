@@ -15,7 +15,7 @@ import (
 
 var Command = &cli.Command{
 	Name:  "status",
-	Usage: "inspect local target state without contacting etcd",
+	Usage: "inspect local target output without contacting etcd",
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "json", Usage: "write a machine-readable JSON report"},
 	},
@@ -39,10 +39,7 @@ var Command = &cli.Command{
 			return err
 		}
 		for _, target := range report.Targets {
-			fmt.Printf("%s\tstate=%s\tcurrent=%s\n", target.ID, target.StateStatus, target.Current.Status)
-			if target.StateError != "" {
-				fmt.Printf("  state error: %s\n", target.StateError)
-			}
+			fmt.Printf("%s\tcurrent=%s\n", target.ID, target.Current.Status)
 			if target.Current.Error != "" {
 				fmt.Printf("  current error: %s\n", target.Current.Error)
 			}
