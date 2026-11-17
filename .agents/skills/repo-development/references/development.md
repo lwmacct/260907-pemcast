@@ -35,11 +35,11 @@ go test ./internal/config
 
 - CLI/生命周期: 检查 `cmd/pemcast`, `internal/appcmd/agent`, `internal/appcmd/tools/pack`, `internal/appcmd/publish`, `internal/appcmd/upgrade`, `internal/appcmd/tools/seed` 和 `internal/appcmd/status`. 保持 signal cancellation, once/watch 行为和 output root 锁生命周期.
 - 配置: 修改 `internal/config/config.go` 与 `validation.go`, 并覆盖 path 安全, mode, duration, target 唯一性, output root 重叠, mapping 引用和 hook 环境变量名.
-- 远端协议: 保持可配置 etcd prefix, 固定 `/v6/active/<target-id>` 与 `/v6/bundles/<target-id>/<generation>` layout, active-prefix snapshot/watch, exact-key bundle fetch, 1 MiB 单 key bundle 限制, 严格 JSON, type/role/encoding 校验, generation/digest 匹配, 以及从同一个 `snapshot + 1` revision 开始 watch. 真实 etcd CI 已覆盖 active snapshot, staged publish 和 agent once; watch 模式的真实 etcd 集成测试仍待补充.
+- 远端协议: 保持可配置 etcd prefix, 固定 `/v6/active/<target-id>` 与 `/v6/bundles/<target-id>/<generation>` layout, active-prefix snapshot/watch, exact-key bundle fetch, 1 MiB 单 key bundle 限制, 严格 JSON, type/role/encoding 校验, generation/digest 匹配, 以及从同一个 snapshot revision 起监听并丢弃不超过该 revision 的重复事件. 真实 etcd CI 已覆盖 active snapshot, staged publish, agent once, watch 更新和 auth token 过期后的空闲 watch.
 - bundle 校验: 保持 digest 逻辑独立于 etcd 和 deployment. 测试 manifest 拒绝, semantic digest 顺序和稳定性, base64 解码, 文件 hash, key mismatch, type/role mismatch, chain 顺序, EKU, CA-only trust, encoding mismatch, size limit 和 validity 边界.
-- reconcile: 覆盖 changed/unchanged digest, dry-run, hook retry, state 更新, concurrency, snapshot 缺失 target 和两种 delete policy. 保持 consumer-side 接口便于 fake 注入.
+- reconcile: 覆盖 changed/unchanged digest, dry-run, pending hook retry, validity 边界, concurrency, snapshot 缺失 target 和两种 delete policy. 保持 consumer-side 接口便于 fake 注入.
 - deployment: 保持排序 flock, staging, fsync, rename, content-addressed release, release 完整性校验, 原子 relative symlink 切换和 active-release 保留.
-- hook/state: 保持直接执行, 最小环境, event schema, process group 超时, 输出限额, 严格 JSON 和原子 state 写入.
+- hook: 保持直接执行, 最小环境, event schema, process group 超时, 输出限额和严格 JSON; hook 失败使用进程内 pending 状态与独立退避, 不写 state 文件.
 - pack: 保持本地 key pair 校验, content-addressed generation, deterministic canonical bundle, 安全输出目录, metadata 不暴露私钥, 严格 pack 读取与写前校验, 以及可由 bundle 重建且与 bundle 一致的 etcdctl stage transaction.
 - publisher: 保持 `publish --pack-dir` 的独立 pack 校验, prefix/keyspace 校验, immutable bundle staging, existing bundle exact match 和 active pointer value+ModRevision CAS. etcd transaction success 是唯一提交判定, 不做会被后续合法发布干扰的 post-CAS read-back. 手动 etcdctl helper 只作为 repo-deployment skill 的 fallback, 不进入产品镜像.
 - upgrade: 保持 canonical v5 active-only 迁移, historical v5 digest 校验, 显式 type map, v6 semantic 重建, immutable staging, source v5 pointer value+ModRevision 参与 destination CAS, postverify 后才可精确删除 `/v5/`, 且 dry-run 零写入. 旧协议 decoder 放在 `internal/upgrade/legacy`, 不进入 v6 runtime 包; 每个发布二进制只包含上一个版本到当前版本的迁移实现.

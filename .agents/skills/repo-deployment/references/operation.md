@@ -13,13 +13,16 @@ pemcast --config /etc/pemcast/config.yaml config validate
 PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd-1:2379"]'
 PEMCAST_AGENT_ETCD_PREFIX=/pemcast
 PEMCAST_AGENT_ONCE=true
-PEMCAST_AGENT_WATCH_RESYNC_INTERVAL=10m
+PEMCAST_AGENT_WATCH_PROGRESS_INTERVAL=30s
+PEMCAST_AGENT_WATCH_PROGRESS_TIMEOUT=2m
 PEMCAST_AGENT_TARGETS='[{"id":"nginx",...}]'
 ```
 
 scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
-配置 etcd 访问, 每个消费者一个 target type, output root, 安全 mappings, validation policy 和 hook. agent 用户需要对 state 和 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
+配置 etcd 访问, 每个消费者一个 target type, output root, 安全 mappings, validation policy 和 hook. agent 用户需要对授权 prefix 只读, 对 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
+
+watch 模式没有周期 resync. agent 长驻 active-prefix watcher, 按 `progress-interval` 请求 progress response; 超过 `progress-timeout` 没有 event 或 progress 时才重建 snapshot/watch. 不要为了消除 auth token warning 调整 etcd `auth-token-ttl`.
 
 ## 常用 target type
 
@@ -139,9 +142,9 @@ pemcast --config /etc/pemcast/config.yaml agent --once
 pemcast --config /etc/pemcast/config.yaml agent
 ```
 
-使用失败自动重启的 supervisor, 并用 `SIGTERM` 或 `SIGINT` 停止. 除非有意在首启同步, state 和 output path 都应持久化.
+使用失败自动重启的 supervisor, 并用 `SIGTERM` 或 `SIGINT` 停止. output path 应持久化, agent 不再维护独立 state directory.
 
-非 dry-run agent 会自动创建本地目录: `agent.state-dir` 固定为 0700, 每个 target 的 output root 与 `.pemcast` 使用该 target 的 `output.directory-mode`. 部署脚本不需要预创建这些路径. `--once --dry-run` 保持无本地写入, 不会创建 state 或 output path.
+非 dry-run agent 会自动创建每个 target 的 output root 与 `.pemcast`, 使用该 target 的 `output.directory-mode`. 部署脚本不需要预创建这些路径. `--once --dry-run` 保持无本地写入, 不会创建 output path.
 
 ### 自引用服务首装
 
@@ -320,7 +323,7 @@ hook:
 
 当 hook 出现分支逻辑, 需要复用, 或需要独立测试时, 再拆成可执行脚本. 无论内联还是脚本, 都必须保持幂等.
 
-所有 hook 都必须幂等. 如果 hook 失败, pemcast 保留已启用的 release, 记录本地 hook error, 并在下一次事件或 resync 时重试 hook. local state 只用于本机 retry 和诊断, 不向 etcd 回报设备状态.
+所有 hook 都必须幂等. 如果 hook 失败, pemcast 保留已启用的 release, 记录进程内 pending hook, 重试前先复核本地 release, 并按独立指数退避执行 hook. pemcast 不向 etcd 回报设备状态.
 
 ## Hook 契约
 
@@ -348,7 +351,6 @@ pemcast --config /etc/pemcast/config.yaml status --json
 readlink -f /etc/nginx/tls/current
 cat /etc/nginx/tls/current/.pemcast-digest
 stat -c '%a %U:%G %n' /etc/nginx/tls/current/privkey.pem
-cat /var/lib/pemcast/nginx.json | jq .
 ```
 
 失败分类:

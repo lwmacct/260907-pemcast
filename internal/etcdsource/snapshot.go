@@ -31,10 +31,16 @@ type PrefixSnapshot struct {
 // SnapshotActive retrieves every active pointer in one range read and returns
 // the revision from which a lossless watch can continue.
 func (c *Client) SnapshotActive(ctx context.Context) (Snapshot, error) {
+	client, closeClient, err := c.freshDataClient()
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("create etcd snapshot client: %w", err)
+	}
+	defer closeClient()
+
 	requestCtx, cancel := c.requestContext(ctx)
 	defer cancel()
 
-	response, err := c.client.Get(requestCtx, c.ActivePrefix(), clientv3.WithPrefix())
+	response, err := client.Get(requestCtx, c.ActivePrefix(), clientv3.WithPrefix())
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read etcd active pointers: %w", err)
 	}
@@ -84,6 +90,12 @@ func (c *Client) FetchBundle(ctx context.Context, targetID, generation string, r
 	if !bundle.SafeName(targetID) || !bundle.SafeName(generation) {
 		return nil, fmt.Errorf("unsafe target or generation")
 	}
+	dataClient, closeClient, err := c.freshDataClient()
+	if err != nil {
+		return nil, fmt.Errorf("create etcd bundle client: %w", err)
+	}
+	defer closeClient()
+
 	requestCtx, cancel := c.requestContext(ctx)
 	defer cancel()
 	key := c.BundleKey(targetID, generation)
@@ -91,7 +103,7 @@ func (c *Client) FetchBundle(ctx context.Context, targetID, generation string, r
 	if revision > 0 {
 		options = append(options, clientv3.WithRev(revision))
 	}
-	response, err := c.client.Get(requestCtx, key, options...)
+	response, err := dataClient.Get(requestCtx, key, options...)
 	if err != nil {
 		return nil, fmt.Errorf("read etcd bundle %q: %w", key, err)
 	}

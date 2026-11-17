@@ -295,42 +295,134 @@ func TestReconcileRecordsHookFailureAndRetriesWithoutRewritingRelease(t *testing
 	hookFailure := errors.New("reload failed")
 	hooks := &fakeHookRunner{errs: []error{hookFailure, nil}}
 	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller.hookRetryMin = time.Nanosecond
+	controller.hookRetryMax = time.Nanosecond
 
 	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
 	if err == nil || !errors.Is(err, hookFailure) {
 		t.Fatalf("first Reconcile() error = %v, want %v", err, hookFailure)
 	}
-	if _, ok := controller.hookErrs.Load("nginx"); !ok {
+	if _, ok := controller.hookDue["nginx"]; !ok {
 		t.Fatal("hook failure was not recorded in memory")
 	}
 
 	deployer.result = current
-	if err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42); err != nil {
-		t.Fatalf("retry Reconcile() error = %v", err)
-	}
+	deadline, exists := controller.NextHookRetry()
+	require.True(t, exists)
+	require.False(t, deadline.IsZero())
+	next := controller.RetryDueHooks(t.Context(), deadline)
+	require.True(t, next.IsZero())
 	if deployer.changedCount() != 1 {
 		t.Fatalf("retry rewrote release: changed activations=%d", deployer.changedCount())
 	}
 	if hooks.count() != 2 {
 		t.Fatalf("hook calls after retry=%d, want 2", hooks.count())
 	}
-	if _, ok := controller.hookErrs.Load("nginx"); ok {
+	if _, ok := controller.hookDue["nginx"]; ok {
 		t.Fatal("hook error was not cleared from memory")
 	}
+}
+
+func TestReconcileSnapshotCanRunUnchangedHook(t *testing.T) {
+	source := &fakeSource{material: testMaterial(t, "digest")}
+	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
+	hooks := &fakeHookRunner{}
+	controller := newTestController(source, deployer, hooks, testAgentConfig())
+
+	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{
+		Active: map[string]string{"nginx": "generation-1"}, Revision: 42,
+	}, true)
+	require.NoError(t, err)
+	require.Equal(t, 1, deployer.count())
+	require.Equal(t, 1, hooks.count())
+}
+
+func TestNewTargetEventReplacesPendingHook(t *testing.T) {
+	source := &fakeSource{material: testMaterial(t, "digest-old")}
+	deployer := &fakeDeployer{result: deploy.Result{
+		Changed: true, ReleaseDir: "/tmp/pemcast/nginx/.pemcast/releases/digest-old",
+		CurrentDir: "/tmp/pemcast/nginx/current",
+	}}
+	hooks := &fakeHookRunner{errs: []error{errors.New("reload failed")}}
+	controller := newTestController(source, deployer, hooks, testAgentConfig())
+
+	require.Error(t, controller.Reconcile(t.Context(), "nginx", "generation-1", 42))
+	require.Contains(t, controller.hookDue, "nginx")
+
+	source.material = testMaterial(t, "digest-new")
+	deployer.result = deploy.Result{
+		Changed: true, ReleaseDir: "/tmp/pemcast/nginx/.pemcast/releases/digest-new",
+		CurrentDir: "/tmp/pemcast/nginx/current",
+	}
+	hooks.errs = nil
+	require.NoError(t, controller.Reconcile(t.Context(), "nginx", "generation-2", 43))
+	require.NotContains(t, controller.hookDue, "nginx")
+	events := hooks.events()
+	require.Len(t, events, 2)
+	require.Equal(t, "generation-2", events[1].Generation)
+}
+
+func TestHookRetryVerifiesReleaseBeforeRunningHook(t *testing.T) {
+	source := &fakeSource{material: testMaterial(t, "digest")}
+	deployer := &fakeDeployer{result: deploy.Result{
+		Changed: true, ReleaseDir: "/tmp/pemcast/nginx/.pemcast/releases/digest",
+		CurrentDir: "/tmp/pemcast/nginx/current",
+	}}
+	hooks := &fakeHookRunner{errs: []error{errors.New("reload failed")}}
+	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller.hookRetryMin = time.Nanosecond
+	controller.hookRetryMax = time.Nanosecond
+
+	require.Error(t, controller.Reconcile(t.Context(), "nginx", "generation-1", 42))
+	deployer.result = deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}
+	deployer.err = errors.New("release mismatch")
+	deadline, exists := controller.NextHookRetry()
+	require.True(t, exists)
+	controller.RetryDueHooks(t.Context(), deadline)
+
+	require.Equal(t, 1, hooks.count())
+	require.Contains(t, controller.hookDue, "nginx")
+
+	deployer.err = nil
+	deadline, exists = controller.NextHookRetry()
+	require.True(t, exists)
+	controller.RetryDueHooks(t.Context(), deadline)
+	require.Equal(t, 2, hooks.count())
+	require.NotContains(t, controller.hookDue, "nginx")
+}
+
+func TestValidityBoundaryIsCheckedWithoutAnotherRemoteFetch(t *testing.T) {
+	source := &fakeSource{material: testMaterial(t, "digest")}
+	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
+	cfg := testAgentConfig()
+	cfg.Targets[0].Validation.MinimumValidity = 30 * time.Minute
+	controller := newTestController(source, deployer, &fakeHookRunner{}, cfg)
+	controller.hookRetryMin = time.Hour
+	controller.hookRetryMax = time.Hour
+
+	require.NoError(t, controller.Reconcile(t.Context(), "nginx", "generation-1", 42))
+	deadline, exists := controller.NextValidityCheck()
+	require.True(t, exists)
+	require.WithinDuration(t, time.Now().Add(30*time.Minute), deadline, time.Minute)
+
+	controller.CheckValidity(t.Context(), time.Now().Add(31*time.Minute))
+	_, exists = controller.NextValidityCheck()
+	require.False(t, exists)
+	require.Len(t, source.recorded(), 1)
 }
 
 func TestReconcileSnapshotDeletePolicies(t *testing.T) {
 	cfg := testAgentConfig(testTarget("retain"))
 	cfg.Targets[0].DeletePolicy = "retain"
 	controller := newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, cfg)
-	if err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}}); err != nil {
+	if err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}}, false); err != nil {
 		t.Fatalf("retain policy returned error: %v", err)
 	}
 
 	cfg = testAgentConfig(testTarget("fail"))
 	cfg.Targets[0].DeletePolicy = "fail"
 	controller = newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, cfg)
-	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}})
+	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}}, false)
 	if err == nil || !strings.Contains(err.Error(), "active pointer was deleted") {
 		t.Fatalf("fail policy error = %v, want deletion error", err)
 	}
@@ -368,7 +460,7 @@ func TestReconcileSnapshotLimitsGlobalConcurrency(t *testing.T) {
 
 	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{
 		Active: map[string]string{"one": "g", "two": "g", "three": "g"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("ReconcileSnapshot() error = %v", err)
 	}

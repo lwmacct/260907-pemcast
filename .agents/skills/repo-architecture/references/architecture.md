@@ -14,14 +14,16 @@ pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast too
 
 `agent --once` 一次 range read 读取 active prefix 下全部 pointer, 得到同一个 revision 的 snapshot, 然后 reconcile 配置 target 的交集. 普通 agent 循环执行:
 
-1. Range read active prefix, 记录 etcd revision.
-2. 并发 reconcile snapshot.
-3. 从 `snapshot.Revision + 1` 开始监听 active prefix.
+1. 用短生命周期 etcd client range read active prefix, 记录 etcd revision.
+2. 并发 reconcile snapshot; unchanged release 也会执行一次幂等 hook.
+3. 从 `snapshot.Revision` 起监听 active prefix, 并丢弃 `revision <= snapshot.Revision` 的重复事件, 因此有效事件边界仍是 snapshot 之后的 revision.
 4. 处理 pointer put/delete; bundle stage 不产生 watch 事件.
-5. 到达 `resync-interval` 时放弃 watch, 从新 snapshot 重启.
-6. snapshot/watch 失败时使用有界指数退避和 jitter 重试.
+5. 长驻 watcher 按 `progress-interval` 发送 manual progress request.
+6. 超过 `progress-timeout` 没有 event/progress, 或 watch 返回协议错误时, 放弃 session 并从新 snapshot 重启.
+7. snapshot/watch 失败时使用有界指数退避和 jitter 重试.
 
 watch 模式中单个 reconcile 失败只记录日志, 不停止进程.
+snapshot 与 exact bundle read 使用短生命周期 etcd client, 避免空闲后复用过期 auth token; 长驻 client 只承担 watch stream, 断线重建 stream 时由官方 client 重新认证.
 
 ```mermaid
 sequenceDiagram
@@ -33,7 +35,6 @@ sequenceDiagram
     participant C as controller
     participant D as deployer
     participant H as hook
-    participant S as state
 
     P->>P2: bundle.json + metadata.json
     P2->>E: create bundle if absent
@@ -48,7 +49,7 @@ sequenceDiagram
     D->>D: 原子切换 current symlink
     C->>H: 执行 trusted hook
     H-->>C: 成功或失败
-    C->>S: 原子保存 state
+    C->>C: 记录 pending retry 或 validity 边界
 ```
 
 ## v6 远端模型
@@ -173,10 +174,10 @@ v5 generation 不会推导 v6 generation; upgrade 从原始材料重建 v6 seman
 3. 按事件 revision exact-key 获取 bundle.
 4. 校验 generation/digest, target type, identity 链/key/EKU 或 trust CA-only 语义, 以及 validity/SAN policy.
 5. dry-run 在任何本地访问前停止.
-6. 加载 state.
-7. 只在本地 selected digest 不同 时激活.
-8. 激活后执行 hook, 或重试已记录 hook failure.
-9. 原子保存 state.
+6. 通过 deployer 读取并校验本地 current release; digest 相同则完整复核 mapped bytes, modes 与目录树.
+7. 只在本地 selected digest 不同 时创建 immutable release 并原子切换 symlink.
+8. 激活后执行 hook; 失败时保留已验证 material 与 event, 由独立指数退避重试.
+9. 记录证书时间元数据, 在 minimum-validity 或 expiry 边界本机告警, 不制造远端请求.
 
 不同 target 可以并发. snapshot 缺失 target 时按 `delete-policy` 处理: `retain` 保留本地文件并记录日志, `fail` 返回错误. agent 不自动删除本地 target.
 
@@ -227,7 +228,7 @@ hook 是本机服务控制适配器, 不是远端状态回报机制. 它必须�
 
 hook 直接执行, 不经过 shell. 它获得固定 `PATH`, 显式放行环境变量和 `PEMCAST_*` event 变量, 并从 stdin 读取 JSON. timeout 时终止整个 process group. 失败输出在收集阶段限制为 4096 bytes.
 
-hook 在 symlink 切换后执行. 失败记录在进程内 `sync.Map`; 后续 event 或 resync 会重试, 不重写未变化 release. hook 必须幂等. agent 重启后内存 hook error 丢失, 但全量 snapshot reconcile 会重新执行 hook. 本地不再有 state 文件; output root 文件系统是唯一 truth.
+hook 在 symlink 切换后执行. 失败记录在进程内 pending hook 状态; 后续独立重试会先复核本地 release, 再执行 hook, 不重写未变化 release. hook 必须幂等. agent 重启后内存 hook error 丢失, 但启动 snapshot 会对 unchanged release 重新执行 hook. 本地没有 state 文件; output root 文件系统是唯一 truth.
 
 
 ## 包地图
@@ -242,7 +243,7 @@ hook 在 symlink 切换后执行. 失败记录在进程内 `sync.Map`; 后续 ev
 - `internal/appcmd/status`: 本地状态 CLI.
 - `internal/config`: schema, defaults, validation 和 cfgm 集成.
 - `internal/keyspace`: 可配置 etcd namespace prefix 与固定 `/v6` key builder.
-- `internal/etcdsource`: active-prefix snapshot/watch 和 exact bundle fetch.
+- `internal/etcdsource`: active-prefix snapshot/watch, watch progress session 和 exact bundle fetch.
 - `internal/bundle`: v6 单 key manifest, digest, generation 和 TLS 校验.
 - `internal/pack`: local TLS 校验, deterministic bundle, metadata 和 stage transaction 生成.
 - `internal/publisher`: v6 pack 的 immutable staging 与 active pointer CAS 状态机.
@@ -260,4 +261,4 @@ hook 在 symlink 切换后执行. 失败记录在进程内 `sync.Map`; 后续 ev
 - `scripts/integration-etcd-upgrade.sh`: 真实 etcd 的 v5-to-v6 upgrade, agent 验证和 old-prefix cleanup 集成测试.
 - `scripts/integration-etcd-prune.sh`: 真实 etcd 的 prune dry-run, 条件删除, active/trust 保护和 agent 健康集成测试.
 
-已知边界: watch 模式与真实 etcd 的集成测试仍待补充.
+真实 etcd 集成测试覆盖 auth token 过期后的空闲 watch: agent 跨多个 token TTL 后仍收到 pointer event, 且 watch 日志不出现 `invalid auth token`.

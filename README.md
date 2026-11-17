@@ -27,9 +27,11 @@ flowchart LR
 - 本地发布内容寻址: release 目录名来自 bundle digest, 相同内容不会重复写入; 复用前校验 marker, bytes, mode 和目录树.
 - 应用路径稳定: 应用读取 `current/...`, pemcast 通过临时 symlink 和 rename 原子切换目标.
 - output root 互斥: 非 dry-run agent 按排序获取每个 root 的 `.pemcast/agent.lock`, 并持有到进程退出.
-- 非 dry-run agent 自动创建本地目录: `state-dir` 固定为 0700, output root 与 `.pemcast` 使用配置的 `directory-mode`; dry-run 不创建任何本地目录.
-- dry-run 无本地写入: 不创建 state directory 和 output root, 不读写 state, 不执行 deploy 或 hook.
-- 服务重载可重试: hook 在本地切换后执行, 失败记录在 state 中, 由后续事件或周期 resync 重试.
+- 非 dry-run agent 自动创建 output root 与 `.pemcast`, 并使用配置的 `directory-mode`; dry-run 不创建任何本地目录.
+- dry-run 无本地写入: 不创建 output root, 不读写本地状态, 不执行 deploy 或 hook.
+- 服务重载可重试: hook 在本地切换后执行, 失败保存在进程内 pending 状态, 由独立指数退避重试.
+- watch 是事件主通道: agent 长驻 active-prefix watcher, 周期发送 manual progress request, 只有 liveness timeout 或协议错误才重建 snapshot/watch.
+- etcd 认证不耦合 token TTL: 稀有的 snapshot 与 exact bundle read 使用短生命周期 client; 长驻 watcher 只承担 watch stream.
 
 ## 快速上手
 
@@ -104,7 +106,7 @@ pemcast \
   --pack-dir /secure/tmp/nginx-pack
 ```
 
-seed 不写 agent state, 也不改变远端 active pointer. 这允许先为 etcd 准备证书目录, 再启动 etcd 与 agent. agent 看到远端 pointer 缺失且 `delete-policy: retain` 时会保留本地 release 并继续 watch; 后续 publish 同一 generation 时本地 release 不变, agent 只补写 state.
+seed 不写本地运行状态, 也不改变远端 active pointer. 这允许先为 etcd 准备证书目录, 再启动 etcd 与 agent. agent 看到远端 pointer 缺失且 `delete-policy: retain` 时会保留本地 release 并继续 watch.
 
 如果本地 `current` 已经指向另一个 digest, seed 默认拒绝. 只在明确的人工救援场景使用:
 
@@ -222,7 +224,9 @@ pemcast --config config/config.yaml agent --once
 pemcast --config config/config.yaml agent
 ```
 
-agent 一次 range read 读取 active prefix 下全部 pointer, 记录同一个 revision, 然后只监听 active prefix. bundle stage 不产生 watch 事件. controller 只 reconcile 配置中的 target, bundle fetch 使用 exact key.
+agent 一次 range read 读取 active prefix 下全部 pointer, 记录同一个 revision, 然后从该 revision 起监听 active prefix, 并丢弃不超过 snapshot revision 的重复事件. bundle stage 不产生 watch 事件. controller 只 reconcile 配置中的 target, bundle fetch 使用 exact key.
+
+watch 模式长驻 etcd stream, 并按 `agent.watch.progress-interval` 请求 progress response. 超过 `agent.watch.progress-timeout` 仍没有 event 或 progress 时, agent 放弃该 session, 重新 snapshot 并从新的 revision watch. 该设计避免为认证 token 保活而周期执行 KV read.
 
 本地布局为:
 
@@ -267,7 +271,7 @@ docker kill --signal=HUP api
 
 hook 是本机服务控制适配器, 必须运行在有权限控制目标服务的位置. 如果 pemcast 以容器方式运行, 它需要挂载 output root, hook 以及对应容器 runtime 控制接口. 挂载 Docker socket 或 Podman socket 等价于高权限, 只应部署在受信任的 node agent 容器中.
 
-pemcast 现阶段不向 etcd 回报设备状态. local state 只用于本机 hook retry 和 `pemcast status` 诊断, 设备离线后重新上线会继续从 etcd 收敛到 active generation.
+pemcast 现阶段不向 etcd 回报设备状态. hook retry 保存在进程内, `pemcast status` 只检查本地 output root. 设备离线后重新上线会继续从 etcd 收敛到 active generation.
 
 配置会拒绝重复或祖先/后代重叠的 output root. 同一个 root 的第二个 agent 进程会因文件锁立即失败.
 
@@ -370,7 +374,7 @@ PEMCAST_CHANGED_FILES
 PEMCAST_BUNDLE_SHA256
 ```
 
-hook 必须幂等. 失败时新证书文件可能已经启用, pemcast 会记录失败并在下一次 watch 事件或周期性 resync 时重试, 且不会重写同一个 release.
+hook 必须幂等. 失败时新证书文件可能已经启用, pemcast 会保留待重试事件, 先复核本地 release 再按独立指数退避重试, 且不会重写同一个 release.
 
 hook 默认只获得固定 `PATH` 和 `PEMCAST_*` 事件变量. 需要继承其他环境变量时, 在 `hook.pass-environment` 中显式列出变量名. hook 输出最多收集 4096 bytes, 超时会终止整个 process group.
 

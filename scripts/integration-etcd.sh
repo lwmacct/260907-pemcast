@@ -23,6 +23,7 @@ __main() {
         etcd \
         --listen-client-urls=http://0.0.0.0:2379 \
         --advertise-client-urls=http://127.0.0.1:2379 \
+        --auth-token-ttl=1 \
         >/dev/null
     trap __cleanup EXIT HUP INT TERM
 
@@ -83,6 +84,9 @@ agent:
   etcd:
     endpoints: ["http://integration-invalid:2379"]
     prefix: /pemcast
+  watch:
+    progress-interval: 100ms
+    progress-timeout: 600ms
   targets:
     - id: nginx
       type: tls-server
@@ -207,6 +211,12 @@ YAML
     done
 
     # Publish pack-a while agent is watching.
+    sleep 3
+    if grep -q 'invalid auth token' "${_work_dir}/watch-agent.log"; then
+        cat "${_work_dir}/watch-agent.log" >&2
+        printf '%s\n' 'watch agent logged an expired auth token' >&2
+        return 1
+    fi
     PEMCAST_AGENT_ETCD_ENDPOINTS="${_endpoints_json}" \
         PEMCAST_AGENT_ETCD_PREFIX=/pemcast \
         ETCDCTL_USER_PUBLISH='publisher-integration:publisher-integration-password' \
@@ -226,6 +236,11 @@ YAML
     test "${_watch_digest}" = "${_generation_a#sha256-}"
     test "$(readlink "${_work_dir}/tls/current")" = \
         ".pemcast/releases/sha256-${_generation_a#sha256-}"
+    if grep -q 'invalid auth token' "${_work_dir}/watch-agent.log"; then
+        cat "${_work_dir}/watch-agent.log" >&2
+        printf '%s\n' 'watch agent logged an expired auth token after activation' >&2
+        return 1
+    fi
 
     printf '%s\n' "integration ok: nginx ${_generation_b}"
 }

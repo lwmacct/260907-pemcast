@@ -79,12 +79,13 @@ type EtcdTLS struct {
 	InsecureSkipVerify bool   `json:"insecure-skip-verify" desc:"skip etcd TLS server verification (unsafe)"`
 }
 
-// Watch configures active-pointer watches and safety resynchronization.
+// Watch configures active-pointer watch liveness and recovery.
 type Watch struct {
-	ResyncInterval time.Duration `json:"resync-interval" desc:"periodic full reconciliation interval, zero disables it"`
-	RetryMin       time.Duration `json:"retry-min"       desc:"minimum retry delay"`
-	RetryMax       time.Duration `json:"retry-max"       desc:"maximum retry delay"`
-	JitterRatio    float64       `json:"jitter-ratio"    desc:"random retry jitter ratio from zero to one"`
+	ProgressInterval time.Duration `json:"progress-interval" desc:"interval for requesting etcd watch progress"`
+	ProgressTimeout  time.Duration `json:"progress-timeout"  desc:"maximum time without a watch event or progress response"`
+	RetryMin         time.Duration `json:"retry-min"          desc:"minimum snapshot/watch restart delay"`
+	RetryMax         time.Duration `json:"retry-max"          desc:"maximum snapshot/watch restart delay"`
+	JitterRatio      float64       `json:"jitter-ratio"       desc:"random restart jitter ratio from zero to one"`
 }
 
 // Target maps one immutable remote bundle to a local certificate directory.
@@ -141,10 +142,11 @@ func DefaultConfig() Config {
 				RequestTimeout: 10 * time.Second,
 			},
 			Watch: Watch{
-				ResyncInterval: 10 * time.Minute,
-				RetryMin:       time.Second,
-				RetryMax:       30 * time.Second,
-				JitterRatio:    0.2,
+				ProgressInterval: 30 * time.Second,
+				ProgressTimeout:  2 * time.Minute,
+				RetryMin:         time.Second,
+				RetryMax:         30 * time.Second,
+				JitterRatio:      0.2,
 			},
 			Targets: nil,
 		},
@@ -215,8 +217,11 @@ func (a Agent) ValidateCommon() error {
 	if (a.Etcd.TLS.CertFile == "") != (a.Etcd.TLS.KeyFile == "") {
 		return fmt.Errorf("agent.etcd.tls cert-file and key-file must be configured together")
 	}
-	if a.Watch.ResyncInterval < 0 || a.Watch.RetryMin <= 0 || a.Watch.RetryMax < a.Watch.RetryMin {
-		return fmt.Errorf("agent.watch retry and resync durations are invalid")
+	if a.Watch.ProgressInterval <= 0 || a.Watch.ProgressTimeout < 3*a.Watch.ProgressInterval {
+		return fmt.Errorf("agent.watch progress interval and timeout are invalid")
+	}
+	if a.Watch.RetryMin <= 0 || a.Watch.RetryMax < a.Watch.RetryMin {
+		return fmt.Errorf("agent.watch retry durations are invalid")
 	}
 	if a.Watch.JitterRatio < 0 || a.Watch.JitterRatio >= 1 {
 		return fmt.Errorf("agent.watch.jitter-ratio must be >= 0 and < 1")

@@ -23,6 +23,7 @@ const DefaultPrefix = keyspace.DefaultPrefix
 // Client wraps the official etcd v3 client with pemcast protocol paths.
 type Client struct {
 	client         *clientv3.Client
+	config         config.Etcd
 	requestTimeout time.Duration
 	keys           keyspace.Keys
 }
@@ -33,6 +34,24 @@ func New(cfg config.Etcd) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	client, err := newEtcdClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{
+		client: client, config: cfg, requestTimeout: cfg.RequestTimeout, keys: keys,
+	}, nil
+}
+
+func newClient(client *clientv3.Client, requestTimeout time.Duration) *Client {
+	return &Client{
+		client:         client,
+		requestTimeout: requestTimeout,
+		keys:           keyspace.Default(),
+	}
+}
+
+func newEtcdClient(cfg config.Etcd) (*clientv3.Client, error) {
 	tlsConfig, err := buildTLSConfig(cfg.TLS)
 	if err != nil {
 		return nil, err
@@ -51,15 +70,15 @@ func New(cfg config.Etcd) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create etcd client: %w", err)
 	}
-	return &Client{client: client, requestTimeout: cfg.RequestTimeout, keys: keys}, nil
+	return client, nil
 }
 
-func newClient(client *clientv3.Client, requestTimeout time.Duration) *Client {
-	return &Client{
-		client:         client,
-		requestTimeout: requestTimeout,
-		keys:           keyspace.Default(),
+func (c *Client) freshDataClient() (*clientv3.Client, func(), error) {
+	client, err := newEtcdClient(c.config)
+	if err != nil {
+		return nil, nil, err
 	}
+	return client, func() { _ = client.Close() }, nil
 }
 
 // Prefix returns the normalized configured etcd namespace prefix.

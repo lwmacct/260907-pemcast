@@ -74,7 +74,7 @@ func (a *Application) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return a.controller.ReconcileSnapshot(ctx, snapshot)
+		return a.controller.ReconcileSnapshot(ctx, snapshot, true)
 	}
 	return a.runWatch(ctx)
 }
@@ -91,33 +91,31 @@ func (a *Application) runWatch(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := a.controller.ReconcileSnapshot(ctx, snapshot); err != nil {
+		if err := a.controller.ReconcileSnapshot(ctx, snapshot, true); err != nil {
 			a.logger.ErrorContext(ctx, "initial snapshot reconcile failed", "error", err)
 		}
 		failures = 0
-		watchCtx, cancel := context.WithCancel(ctx)
-		events, watchErrors := a.source.WatchActive(watchCtx, snapshot.Revision+1)
-		var resync <-chan time.Time
-		var timer *time.Timer
-		if a.config.Watch.ResyncInterval > 0 {
-			timer = time.NewTimer(a.config.Watch.ResyncInterval)
-			resync = timer.C
-		}
+		session := a.source.WatchActive(ctx, snapshot.Revision)
+		progressTicker := time.NewTicker(a.config.Watch.ProgressInterval)
+		livenessTimer := time.NewTimer(a.config.Watch.ProgressTimeout)
+		hookNext, hookExists := a.controller.NextHookRetry()
+		validityNext, validityExists := a.controller.NextValidityCheck()
+		hookTimer, hookDeadline := deadlineTimer(hookNext, hookExists)
+		validityTimer, validityDeadline := deadlineTimer(validityNext, validityExists)
 		restart := false
 		for !restart {
 			select {
 			case <-ctx.Done():
-				cancel()
-				if timer != nil {
-					timer.Stop()
-				}
+				progressTicker.Stop()
+				livenessTimer.Stop()
+				stopDeadlineTimer(hookTimer)
+				stopDeadlineTimer(validityTimer)
+				_ = session.Close()
 				return nil
-			case <-resync:
-				restart = true
-			case event, ok := <-events:
+			case update, ok := <-session.Updates():
 				if !ok {
 					select {
-					case err := <-watchErrors:
+					case err := <-session.Errors():
 						if err != nil {
 							a.logger.WarnContext(ctx, "etcd watch ended", "error", err)
 						}
@@ -126,34 +124,101 @@ func (a *Application) runWatch(ctx context.Context) error {
 					restart = true
 					continue
 				}
-				if !a.controller.HasTarget(event.TargetID) {
-					continue
+				switch update.Kind {
+				case etcdsource.WatchCreated, etcdsource.WatchProgress:
+					resetTimer(livenessTimer, time.Now().Add(a.config.Watch.ProgressTimeout))
+				case etcdsource.WatchEvent:
+					event := update.Event
+					if event.Revision <= snapshot.Revision {
+						resetTimer(livenessTimer, time.Now().Add(a.config.Watch.ProgressTimeout))
+						continue
+					}
+					if a.controller.HasTarget(event.TargetID) {
+						var err error
+						if event.Deleted {
+							err = a.controller.HandleDelete(ctx, event.TargetID)
+						} else {
+							err = a.controller.Reconcile(ctx, event.TargetID, event.Generation, event.Revision)
+						}
+						if err != nil {
+							a.logger.ErrorContext(
+								ctx, "reconcile watch event failed",
+								"target", event.TargetID, "error", err,
+							)
+						}
+					}
+					resetTimer(livenessTimer, time.Now().Add(a.config.Watch.ProgressTimeout))
+					hookNext, _ := a.controller.NextHookRetry()
+					validityNext, _ := a.controller.NextValidityCheck()
+					resetDeadlineTimer(&hookTimer, &hookDeadline, hookNext)
+					resetDeadlineTimer(&validityTimer, &validityDeadline, validityNext)
 				}
-				var err error
-				if event.Deleted {
-					err = a.controller.HandleDelete(ctx, event.TargetID)
-				} else {
-					err = a.controller.Reconcile(ctx, event.TargetID, event.Generation, event.Revision)
-				}
-				if err != nil {
-					a.logger.ErrorContext(ctx, "reconcile watch event failed", "target", event.TargetID, "error", err)
-				}
-			case err, ok := <-watchErrors:
+			case err, ok := <-session.Errors():
 				if ok && err != nil {
 					a.logger.WarnContext(ctx, "etcd watch failed", "error", err)
 				}
 				restart = true
+			case now := <-progressTicker.C:
+				if err := session.RequestProgress(ctx); err != nil {
+					a.logger.WarnContext(ctx, "request etcd watch progress failed", "now", now, "error", err)
+				}
+			case <-livenessTimer.C:
+				a.logger.ErrorContext(ctx, "etcd watch liveness timeout")
+				restart = true
+			case now := <-hookDeadline:
+				next := a.controller.RetryDueHooks(ctx, now)
+				resetDeadlineTimer(&hookTimer, &hookDeadline, next)
+			case now := <-validityDeadline:
+				a.controller.CheckValidity(ctx, now)
+				nextValidity, _ := a.controller.NextValidityCheck()
+				resetDeadlineTimer(&validityTimer, &validityDeadline, nextValidity)
 			}
 		}
-		cancel()
-		if timer != nil {
-			timer.Stop()
-		}
+		progressTicker.Stop()
+		livenessTimer.Stop()
+		stopDeadlineTimer(hookTimer)
+		stopDeadlineTimer(validityTimer)
+		_ = session.Close()
 		if !sleepContext(ctx, a.retryDelay(1)) {
 			return nil
 		}
 	}
 	return nil
+}
+
+func deadlineTimer(deadline time.Time, exists bool) (*time.Timer, <-chan time.Time) {
+	if !exists || deadline.IsZero() {
+		return nil, nil
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	return timer, timer.C
+}
+
+func stopDeadlineTimer(timer *time.Timer) {
+	if timer != nil {
+		timer.Stop()
+	}
+}
+
+func resetDeadlineTimer(timer **time.Timer, channel *<-chan time.Time, deadline time.Time) {
+	stopDeadlineTimer(*timer)
+	if deadline.IsZero() {
+		*timer = nil
+		*channel = nil
+		return
+	}
+	*timer = time.NewTimer(time.Until(deadline))
+	*channel = (*timer).C
+}
+
+func resetTimer(timer *time.Timer, deadline time.Time) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(time.Until(deadline))
 }
 
 func (a *Application) retryDelay(failures int) time.Duration {

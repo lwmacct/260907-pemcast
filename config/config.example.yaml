@@ -27,10 +27,11 @@ agent:
 
   # etcd watch and retry configuration
   watch:
-    resync-interval: 10m0s # periodic full reconciliation interval, zero disables it
-    retry-min: 1s # minimum retry delay
-    retry-max: 30s # maximum retry delay
-    jitter-ratio: 0.2 # random retry jitter ratio from zero to one
+    progress-interval: 30s # interval for requesting etcd watch progress
+    progress-timeout: 2m0s # maximum time without a watch event or progress response
+    retry-min: 1s # minimum snapshot/watch restart delay
+    retry-max: 30s # maximum snapshot/watch restart delay
+    jitter-ratio: 0.2 # random restart jitter ratio from zero to one
 
   # certificate synchronization targets
   targets:
