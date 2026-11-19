@@ -51,10 +51,10 @@ __main() {
 			--publisher-user publisher-integration \
 			nginx >/dev/null
 
-	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=integration-a' -days 2 \
+	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=integration-a' -days 30 \
 		-addext 'basicConstraints=critical,CA:FALSE' \
 		-keyout "${_work_dir}/a-key.pem" -out "${_work_dir}/a-cert.pem" >/dev/null 2>&1
-	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=integration-b' -days 2 \
+	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=integration-b' -days 30 \
 		-addext 'basicConstraints=critical,CA:FALSE' \
 		-keyout "${_work_dir}/b-key.pem" -out "${_work_dir}/b-cert.pem" >/dev/null 2>&1
 
@@ -96,12 +96,8 @@ agent:
     - id: nginx
       etcd: default
       type: tls-server
-      delete-policy: retain
       output:
         root: ${_work_dir}/tls
-      validation:
-        reject-expired: true
-        minimum-validity: 1h
       hook:
         path: /bin/true
         args: []

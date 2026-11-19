@@ -81,7 +81,7 @@ func Material(options Options) (*bundle.Material, error) {
 		Certificates: certificates, Leaf: leaf,
 	}
 	if err := bundle.ValidatePolicy(material, bundle.Policy{
-		Now: options.Now, RejectExpired: options.Target.Validation.RejectExpired,
+		Now: options.Now, RejectExpired: true,
 		MinimumValidity: options.Target.Validation.MinimumValidity,
 		ServerNames:     options.Target.Validation.ServerNames,
 	}); err != nil {

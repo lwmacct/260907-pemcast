@@ -55,8 +55,8 @@ func (t Target) Validate() error {
 		}
 		names[file.Name] = struct{}{}
 	}
-	if t.Validation.MinimumValidity < 0 {
-		return fmt.Errorf("validation.minimum-validity must not be negative")
+	if t.Validation.MinimumValidity <= 0 {
+		return fmt.Errorf("validation.minimum-validity must be positive")
 	}
 	if t.Type != bundle.TypeTLSServer && len(t.Validation.ServerNames) > 0 {
 		return fmt.Errorf("validation.server-names is only valid for tls-server targets")

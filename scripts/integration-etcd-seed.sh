@@ -23,7 +23,7 @@ __cleanup() {
 }
 
 __make_ca() {
-	openssl req -x509 -newkey ed25519 -nodes -days 2 \
+	openssl req -x509 -newkey ed25519 -nodes -days 30 \
 		-subj '/CN=pemcast seed integration CA' \
 		-addext 'basicConstraints=critical,CA:TRUE' \
 		-addext 'keyUsage=critical,keyCertSign,cRLSign' \
@@ -45,7 +45,7 @@ __make_leaf() {
 		>"${_work_dir}/${_name}.ext"
 	openssl x509 -req -in "${_work_dir}/${_name}.csr" \
 		-CA "${_work_dir}/ca.pem" -CAkey "${_work_dir}/ca.key" -CAcreateserial \
-		-days 2 -sha256 -extfile "${_work_dir}/${_name}.ext" \
+		-days 30 -sha256 -extfile "${_work_dir}/${_name}.ext" \
 		-out "${_work_dir}/${_name}.pem" >/dev/null 2>&1
 	cat "${_work_dir}/${_name}.pem" "${_work_dir}/ca.pem" \
 		>"${_work_dir}/${_name}-fullchain.pem"
@@ -133,12 +133,8 @@ agent:
     - id: nginx
       etcd: default
       type: tls-server
-      delete-policy: retain
       output:
         root: ${_work_dir}/tls
-      validation:
-        reject-expired: true
-        minimum-validity: 1h
       hook:
         path: /bin/true
         args: []

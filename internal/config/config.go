@@ -34,6 +34,11 @@ const (
 	DefaultRetainReleases = 3
 )
 
+const (
+	DefaultDeletePolicy    = "retain"
+	DefaultMinimumValidity = 336 * time.Hour
+)
+
 // Config is grouped by CLI subcommand so cfgm can trim command prefixes.
 type Config struct {
 	Agent Agent `json:"agent" desc:"pemcast agent configuration"`
@@ -195,7 +200,6 @@ func (o Output) OrderedFiles() []OrderedOutputFile {
 
 // Validation describes target-local certificate policy.
 type Validation struct {
-	RejectExpired   bool          `json:"reject-expired" desc:"reject expired bundle certificates"`
 	MinimumValidity time.Duration `json:"minimum-validity" desc:"minimum required remaining certificate validity"`
 	ServerNames     []string      `json:"server-names"    desc:"required DNS names or IP addresses for tls-server targets"`
 }
@@ -244,7 +248,7 @@ func ExampleConfig() Config {
 			ID:           "nginx",
 			Etcd:         "default",
 			Type:         bundle.TypeTLSServer,
-			DeletePolicy: "retain",
+			DeletePolicy: DefaultDeletePolicy,
 			Output: Output{
 				Root: "/etc/nginx/tls",
 				Files: map[string]OutputFile{
@@ -252,8 +256,7 @@ func ExampleConfig() Config {
 				},
 			},
 			Validation: Validation{
-				RejectExpired:   true,
-				MinimumValidity: time.Hour,
+				MinimumValidity: DefaultMinimumValidity,
 			},
 			Hook: Hook{
 				Path: "/etc/pemcast/hooks/reload-nginx", Timeout: 30 * time.Second,
@@ -280,6 +283,12 @@ func (c Config) Normalized() Config {
 
 // Normalized resolves output-file defaults for one target.
 func (t Target) Normalized() Target {
+	if t.DeletePolicy == "" {
+		t.DeletePolicy = DefaultDeletePolicy
+	}
+	if t.Validation.MinimumValidity == 0 {
+		t.Validation.MinimumValidity = DefaultMinimumValidity
+	}
 	t.Output.Files = normalizeOutputFiles(t.Type, t.Output.Files)
 	return t
 }

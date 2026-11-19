@@ -73,6 +73,17 @@ func TestNormalizeOutputFilesAppliesRoleDefaults(t *testing.T) {
 	require.Equal(t, []string{"privkey.pem", "tls.crt"}, publicFileNames(cfg.Normalized().Agent.Targets[0].Output))
 }
 
+func TestNormalizeTargetAppliesSafetyDefaults(t *testing.T) {
+	target := validTarget("nginx", filepath.Join(t.TempDir(), "tls"))
+	target.DeletePolicy = ""
+	cfg := singleSourceConfig(target)
+	require.NoError(t, cfg.Validate())
+
+	normalized := cfg.Normalized().Agent.Targets[0]
+	require.Equal(t, DefaultDeletePolicy, normalized.DeletePolicy)
+	require.Equal(t, DefaultMinimumValidity, normalized.Validation.MinimumValidity)
+}
+
 func TestValidateRejectsUnsafeOrDuplicatedOutputFileNames(t *testing.T) {
 	target := validTarget("nginx", filepath.Join(t.TempDir(), "tls"))
 	file := target.Output.Files["private-key"]
@@ -256,7 +267,7 @@ func targetForSource(name string, target Target) Target {
 
 func validTarget(id, root string) Target {
 	return Target{
-		ID: id, DeletePolicy: "retain", Type: bundle.TypeTLSServer,
+		ID: id, Type: bundle.TypeTLSServer,
 		Output: Output{Root: root, Files: map[string]OutputFile{
 			"certificate-chain": {Name: bundle.NameCertificateChain, Mode: FileMode("0644")},
 			"private-key":       {Name: bundle.NamePrivateKey, Mode: FileMode("0600")},

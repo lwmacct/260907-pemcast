@@ -159,7 +159,7 @@ func (c *Controller) reconcile(
 		)
 	}
 	if err := bundle.ValidatePolicy(material, bundle.Policy{
-		Now: time.Now(), RejectExpired: target.Validation.RejectExpired,
+		Now: time.Now(), RejectExpired: true,
 		MinimumValidity: target.Validation.MinimumValidity, ServerNames: target.Validation.ServerNames,
 	}); err != nil {
 		return fmt.Errorf("validate target %q: %w", id, err)
@@ -379,7 +379,7 @@ func (c *Controller) retryHook(ctx context.Context, id string, now time.Time) {
 }
 
 func (c *Controller) recordValidity(target config.Target, generation string, material *bundle.Material) {
-	if target.Validation.MinimumValidity <= 0 && !target.Validation.RejectExpired {
+	if target.Validation.MinimumValidity <= 0 {
 		c.validityMu.Lock()
 		defer c.validityMu.Unlock()
 		delete(c.validity, target.ID)
@@ -397,7 +397,7 @@ func (c *Controller) recordValidity(target config.Target, generation string, mat
 	state := validityState{
 		generation: generation, notAfter: notAfter,
 		minimumValidity: target.Validation.MinimumValidity,
-		rejectExpired:   target.Validation.RejectExpired,
+		rejectExpired:   true,
 	}
 	c.validityMu.Lock()
 	defer c.validityMu.Unlock()

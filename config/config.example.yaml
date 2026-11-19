@@ -55,8 +55,7 @@ agent:
 
       # TLS material validation configuration
       validation:
-        reject-expired: true # reject expired bundle certificates
-        minimum-validity: 1h0m0s # minimum required remaining certificate validity
+        minimum-validity: 336h0m0s # minimum required remaining certificate validity
 
         # required DNS names or IP addresses for tls-server targets
         server-names: []

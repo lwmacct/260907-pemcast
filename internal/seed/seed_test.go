@@ -101,7 +101,7 @@ func testTarget(root string, minimumValidity time.Duration) config.Target {
 			"private-key":       {Name: "privkey.pem", Mode: config.FileMode("0600")},
 		}},
 		Validation: config.Validation{
-			RejectExpired: true, MinimumValidity: minimumValidity,
+			MinimumValidity: minimumValidity,
 		},
 	}
 }

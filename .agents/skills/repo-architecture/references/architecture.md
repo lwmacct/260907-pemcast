@@ -181,7 +181,7 @@ v5 generation 不会推导 v6 generation; upgrade 从原始材料重建 v6 seman
 8. 激活后执行 hook; 失败时保留已验证 material 与 event, 由独立指数退避重试.
 9. 记录证书时间元数据, 在 minimum-validity 或 expiry 边界本机告警, 不制造远端请求.
 
-不同 target 可以并发. snapshot 缺失 target 时按 `delete-policy` 处理: `retain` 保留本地文件并记录日志, `fail` 返回错误. agent 不自动删除本地 target.
+不同 target 可以并发. snapshot 缺失 target 时按 `delete-policy` 处理: 默认 `retain` 保留本地文件并记录日志, 显式 `fail` 返回错误. agent 不自动删除本地 target. 过期证书始终拒绝; 默认还要求剩余有效期至少 336h.
 
 ## 本地启用
 

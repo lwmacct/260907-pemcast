@@ -42,7 +42,7 @@ pemcast config example > config/config.yaml
 pemcast --config config/config.yaml config validate
 ```
 
-至少配置一个 `agent.etcds[]` entry 和一个 target 的 `etcd`, `type`, `output.root`, validation policy 与 hook. `output.files` 可以整体省略, 按 type 推导 role 的 public 文件名和 mode. 常用 type 是 `tls-server`, `tls-client` 和 `trust`.
+至少配置一个 `agent.etcds[]` entry 和一个 target 的 `etcd`, `type`, `output.root` 与 hook. `output.files`, `delete-policy` 和 `validation` 都可以省略. 常用 type 是 `tls-server`, `tls-client` 和 `trust`.
 
 ### Role-based output
 
@@ -72,6 +72,17 @@ targets:
 | `trust` | `ca-bundle.pem` mode `0644` |
 
 `name` 必须是 output root 下的安全文件名, 不能使用子目录, `current` 或 `.pemcast`. 不同 role 的 name 不能重复. release 内部始终使用协议 bundle 文件名; 用户配置的 name 只影响 output root 下的稳定 symlink.
+
+### Target 安全默认值
+
+省略 `delete-policy` 时使用 `retain`; 省略 `validation` 时拒绝过期证书, 并要求剩余有效期至少 `336h`. 需要更短的测试窗口时显式配置:
+
+```yaml
+validation:
+  minimum-validity: 1h
+```
+
+过期证书始终拒绝, 不提供配置开关. `minimum-validity` 只影响未过期证书的剩余时间下限.
 
 每个 `agent.etcds[]` entry 直接平级配置 `name`, `prefix`, `endpoints`, authentication 和 TLS. pack CLI 通过 `--etcd-prefix` 配置. 程序只硬编码 `/v6` 子协议:
 
@@ -167,7 +178,7 @@ pemcast \
   --pack-dir /secure/tmp/nginx-pack
 ```
 
-seed 不写本地运行状态, 也不改变远端 active pointer. 这允许先为 etcd 准备证书目录, 再启动 etcd 与 agent. agent 看到远端 pointer 缺失且 `delete-policy: retain` 时会保留本地 release 并继续 watch.
+seed 不写本地运行状态, 也不改变远端 active pointer. 这允许先为 etcd 准备证书目录, 再启动 etcd 与 agent. agent 看到远端 pointer 缺失且使用默认 retain 行为时, 会保留本地 release 并继续 watch.
 
 如果本地 `current` 已经指向另一个 digest, seed 默认拒绝. 只在明确的人工救援场景使用:
 

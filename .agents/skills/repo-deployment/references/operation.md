@@ -19,7 +19,7 @@ PEMCAST_AGENT_TARGETS='[{"id":"nginx","etcd":"default",...}]'
 
 scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
-配置 etcd 访问, 每个消费者一个 target type, output root, 可选 role output 覆盖, validation policy 和 hook. agent 用户需要对授权 prefix 只读, 对 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
+配置 etcd 访问, 每个消费者一个 target type, output root 和 hook. role output, delete-policy 与 validation policy 都可省略. agent 用户需要对授权 prefix 只读, 对 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
 
 `output.files` 按 role 覆盖 public 文件名和 mode, 可以整体省略:
 
@@ -36,6 +36,8 @@ output:
 ```
 
 默认 identity 输出是 `fullchain.pem` mode `0644` 与 `privkey.pem` mode `0600`; trust 输出是 `ca-bundle.pem` mode `0644`. name 只能是根级安全文件名, 不能是 `current` 或 `.pemcast`, 不同 role 也不能重名.
+
+省略 `delete-policy` 时使用 `retain`. 省略 `validation` 时拒绝过期证书, 并要求剩余有效期至少 `336h`; 测试场景可显式缩短 `minimum-validity`. 过期证书没有配置开关.
 
 watch 模式没有周期 resync. agent 长驻 active-prefix watcher, 按 `progress-interval` 请求 progress response; 超过 `progress-timeout` 没有 event 或 progress 时才重建 snapshot/watch. 不要为了消除 auth token warning 调整 etcd `auth-token-ttl`.
 
@@ -176,7 +178,7 @@ pemcast --config /etc/pemcast/config.yaml \
   seed --target etcd --pack-dir /secure/tmp/etcd-pack
 ```
 
-seed 不访问 etcd, 不写 agent state, 不改变 active pointer. 它只物化本地 content-addressed release 和 `current`. 随后 etcd 只读挂载完整 output root, 与 agent 同时启动. pointer 缺失时使用 `delete-policy: retain` 的 agent 会保留本地 release 并等待首次 publish.
+seed 不访问 etcd, 不写 agent state, 不改变 active pointer. 它只物化本地 content-addressed release 和 `current`. 随后 etcd 只读挂载完整 output root, 与 agent 同时启动. pointer 缺失时使用默认 retain 行为的 agent 会保留本地 release 并等待首次 publish.
 
 本地 `current` 指向不同 generation 时, seed 默认拒绝. 只有停止 agent 后的显式人工救援才使用 `seed --force`; 随后正常 publish 同一 pack, 再启动 agent. 不要用固定自签证书, 指纹 fallback 或 `insecure-skip-verify` 来隐藏这个首装边界.
 

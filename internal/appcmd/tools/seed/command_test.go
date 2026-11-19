@@ -26,7 +26,7 @@ import (
 
 func TestSeedCommandMaterializesPackWithoutState(t *testing.T) {
 	root := t.TempDir()
-	packDir := writePack(t, root, "nginx", "nginx", 2*time.Hour)
+	packDir := writePack(t, root, "nginx", "nginx", 400*time.Hour)
 
 	err := runCommand(t, root, packDir, false)
 	require.NoError(t, err)
@@ -37,8 +37,8 @@ func TestSeedCommandMaterializesPackWithoutState(t *testing.T) {
 
 func TestSeedCommandRequiresForceAndLock(t *testing.T) {
 	root := t.TempDir()
-	first := writePack(t, root, "nginx", "nginx-first", 2*time.Hour)
-	second := writePack(t, root, "nginx", "nginx-second", 3*time.Hour)
+	first := writePack(t, root, "nginx", "nginx-first", 400*time.Hour)
+	second := writePack(t, root, "nginx", "nginx-second", 500*time.Hour)
 
 	require.NoError(t, runCommand(t, root, first, false))
 	err := runCommand(t, root, second, false)
@@ -59,7 +59,7 @@ func TestSeedCommandRequiresForceAndLock(t *testing.T) {
 
 func TestSeedCommandRejectsPackTargetMismatch(t *testing.T) {
 	root := t.TempDir()
-	packDir := writePack(t, root, "other", "other", 2*time.Hour)
+	packDir := writePack(t, root, "other", "other", 400*time.Hour)
 
 	err := runCommand(t, root, packDir, false)
 	require.ErrorContains(t, err, `pack target "other" does not match requested target "nginx"`)
@@ -133,12 +133,8 @@ func writeConfiguration(t *testing.T, root string) string {
     - id: nginx
       etcd: default
       type: tls-server
-      delete-policy: retain
       output:
         root: %s
-      validation:
-        reject-expired: true
-        minimum-validity: 1h
 `, root)
 	require.NoError(t, os.WriteFile(configurationPath, []byte(configuration), 0o600))
 	return configurationPath
@@ -164,13 +160,11 @@ func writeMultiSourceConfiguration(t *testing.T, bendianRoot, lwmacctRoot string
     - id: shared
       etcd: bendian
       type: tls-server
-      delete-policy: retain
       output:
         root: %s
     - id: shared
       etcd: lwmacct
       type: tls-server
-      delete-policy: retain
       output:
         root: %s
 `, bendianRoot, lwmacctRoot)
@@ -185,9 +179,6 @@ func configuredTarget(root string) appconfig.Target {
 			"certificate-chain": {Name: "fullchain.pem", Mode: appconfig.FileMode("0644")},
 			"private-key":       {Name: "privkey.pem", Mode: appconfig.FileMode("0600")},
 		}},
-		Validation: appconfig.Validation{
-			RejectExpired: true,
-		},
 	}
 }
 
@@ -209,7 +200,7 @@ func writePack(t *testing.T, root, targetID, commonName string, lifetime time.Du
 func writePackWithPrefix(t *testing.T, targetID, commonName, etcdPrefix string) string {
 	t.Helper()
 
-	certificatePath, privateKeyPath := writeKeyPair(t, commonName, 2*time.Hour)
+	certificatePath, privateKeyPath := writeKeyPair(t, commonName, 400*time.Hour)
 	result, err := pack.Build(pack.Options{
 		Type:     "tls-server",
 		TargetID: targetID, EtcdPrefix: etcdPrefix,

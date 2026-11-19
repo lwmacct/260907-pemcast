@@ -75,7 +75,7 @@ __make_expired_ca() {
 }
 
 __make_active_ca() {
-	openssl req -x509 -newkey ed25519 -nodes -days 2 \
+	openssl req -x509 -newkey ed25519 -nodes -days 30 \
 		-subj '/CN=prune-active-ca' \
 		-addext 'basicConstraints=critical,CA:TRUE' \
 		-addext 'keyUsage=critical,keyCertSign,cRLSign' \
@@ -129,12 +129,8 @@ agent:
     - id: nginx
       etcd: default
       type: tls-server
-      delete-policy: retain
       output:
         root: ${_work_dir}/tls
-      validation:
-        reject-expired: true
-        minimum-validity: 1h
       hook:
         path: /bin/true
         args: []
@@ -182,7 +178,7 @@ policy = policy_any
 commonName = optional
 EOF
 
-	openssl req -x509 -newkey ed25519 -nodes -days 2 \
+	openssl req -x509 -newkey ed25519 -nodes -days 30 \
 		-subj '/CN=prune-active' \
 		-addext 'basicConstraints=critical,CA:FALSE' \
 		-addext 'extendedKeyUsage=serverAuth' \

@@ -67,11 +67,11 @@ __main() {
 			--publisher-user publisher-lwmacct \
 			shared >/dev/null
 
-	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=bendian.example' -days 2 \
+	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=bendian.example' -days 30 \
 		-addext 'basicConstraints=critical,CA:FALSE' \
 		-keyout "${_work_dir}/bendian-key.pem" \
 		-out "${_work_dir}/bendian-cert.pem" >/dev/null 2>&1
-	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=lwmacct.example' -days 2 \
+	openssl req -x509 -newkey ed25519 -nodes -subj '/CN=lwmacct.example' -days 30 \
 		-addext 'basicConstraints=critical,CA:FALSE' \
 		-keyout "${_work_dir}/lwmacct-key.pem" \
 		-out "${_work_dir}/lwmacct-cert.pem" >/dev/null 2>&1
@@ -116,24 +116,16 @@ agent:
     - id: shared
       etcd: bendian
       type: tls-server
-      delete-policy: retain
       output:
         root: ${_work_dir}/bendian
-      validation:
-        reject-expired: true
-        minimum-validity: 1h
       hook:
         path: /bin/true
         timeout: 2s
     - id: shared
       etcd: lwmacct
       type: tls-server
-      delete-policy: retain
       output:
         root: ${_work_dir}/lwmacct
-      validation:
-        reject-expired: true
-        minimum-validity: 1h
       hook:
         path: /bin/true
         timeout: 2s
