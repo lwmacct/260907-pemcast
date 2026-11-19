@@ -126,6 +126,22 @@ func TestManagementConfigUsesDedicatedCredential(t *testing.T) {
 	require.Equal(t, agentConfig.Endpoints, managementConfig.Endpoints)
 }
 
+func TestClientConfigAppliesEtcdTimeoutDefaults(t *testing.T) {
+	source := validSourceEtcd("default", "/tenants/default", "")
+	source.DialTimeout = 0
+	source.RequestTimeout = 0
+
+	etcd := source.ClientConfig()
+	require.Equal(t, DefaultEtcdDialTimeout, etcd.DialTimeout)
+	require.Equal(t, DefaultEtcdRequestTimeout, etcd.RequestTimeout)
+
+	source.DialTimeout = -time.Second
+	source.RequestTimeout = -time.Second
+	etcd = source.ClientConfig()
+	require.Equal(t, -time.Second, etcd.DialTimeout)
+	require.Equal(t, -time.Second, etcd.RequestTimeout)
+}
+
 func TestValidateRejectsMissingOrUnusedSourceReferences(t *testing.T) {
 	cfg := singleSourceConfig(validTarget("shared", filepath.Join(t.TempDir(), "tls")))
 	cfg.Agent.Targets[0].Etcd = "missing"

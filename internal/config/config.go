@@ -20,6 +20,11 @@ const AppName = "pemcast"
 // DefaultEtcdPrefix is the default namespace placed before the fixed v6 protocol root.
 const DefaultEtcdPrefix = "/pemcast"
 
+const (
+	DefaultEtcdDialTimeout    = 5 * time.Second
+	DefaultEtcdRequestTimeout = 10 * time.Second
+)
+
 // Config is grouped by CLI subcommand so cfgm can trim command prefixes.
 type Config struct {
 	Agent Agent `json:"agent" desc:"pemcast agent configuration"`
@@ -94,9 +99,17 @@ type Source struct {
 
 // ClientConfig returns the command-agnostic etcd client fields.
 func (s Source) ClientConfig() Etcd {
+	dialTimeout := s.DialTimeout
+	if dialTimeout == 0 {
+		dialTimeout = DefaultEtcdDialTimeout
+	}
+	requestTimeout := s.RequestTimeout
+	if requestTimeout == 0 {
+		requestTimeout = DefaultEtcdRequestTimeout
+	}
 	return Etcd{
 		Prefix: s.Prefix, Endpoints: s.Endpoints, User: s.User,
-		DialTimeout: s.DialTimeout, RequestTimeout: s.RequestTimeout, TLS: s.TLS,
+		DialTimeout: dialTimeout, RequestTimeout: requestTimeout, TLS: s.TLS,
 	}
 }
 
