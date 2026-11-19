@@ -42,16 +42,16 @@ pemcast config example > config/config.yaml
 pemcast --config config/config.yaml config validate
 ```
 
-至少配置 `agent.etcd.endpoints`, 一个 target 的 `type`, `output.root`, mappings, validation policy 和 hook. 常用 type 是 `tls-server`, `tls-client` 和 `trust`.
+至少配置一个 `agent.etcds[]` entry 和一个 target 的 `etcd`, `type`, `output.root`, mappings, validation policy 与 hook. 常用 type 是 `tls-server`, `tls-client` 和 `trust`.
 
-etcd namespace prefix 默认 `/pemcast`. agent 与 publish 通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 配置, pack CLI 通过 `--etcd-prefix` 配置. 程序只硬编码 `/v6` 子协议:
+每个 `agent.etcds[]` entry 直接平级配置 `name`, `prefix`, `endpoints`, authentication 和 TLS. pack CLI 通过 `--etcd-prefix` 配置. 程序只硬编码 `/v6` 子协议:
 
 ```text
 /pemcast/v6/active/nginx = sha256-<bundle-digest>
 /pemcast/v6/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
-etcd 认证使用单个 `username:password` 值, 按第一个冒号切分, 密码可以继续包含冒号. agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`; publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`; upgrade 依次读取 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`.
+etcd 认证使用单个 `username:password` 值, 按第一个冒号切分, 密码可以继续包含冒号. `agent.etcds[].user` 是 agent 凭据; `management-user` 是可选的 publish/upgrade/prune 凭据, 为空时按命令依次使用环境变量 fallback. publish 使用 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`; upgrade 使用 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`; prune 使用 `ETCDCTL_USER_PRUNE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 包含凭据的配置文件必须具有最小权限, 并纳入与私钥相同的 secret 管理边界.
 
 本地打包:
 
@@ -93,6 +93,38 @@ pemcast tools pack \
 
 `pack` 不访问 etcd. identity bundle 的 `bundle.json` 与 `stage.txn` 包含私钥, 文件权限为 0600; pack 目录只能保存在受限存储中.
 
+### 单进程多 tenant agent
+
+`agent.targets[].id` 保持为远端协议 target ID. 当一个设备需要消费多个 etcd tenant 时, 为 tenant 定义 agent-local etcd name, 并在 target 上显式引用它:
+
+```yaml
+agent:
+  etcds:
+    - name: bendian
+      endpoints:
+        - https://etcd.example:2379
+      prefix: /pemcast/tenants/bendian
+      user: agent-bendian:password
+      management-user: publisher-bendian:password
+    - name: lwmacct
+      endpoints:
+        - https://etcd.example:2379
+      prefix: /pemcast/tenants/lwmacct
+      user: agent-lwmacct:password
+      management-user: publisher-lwmacct:password
+  targets:
+    - id: kuaicdn.cn
+      etcd: bendian
+      # ...
+    - id: lwmacct.com
+      etcd: lwmacct
+      # ...
+```
+
+每个 etcd 拥有独立 client, snapshot/watch session 和重试状态; 所有 output root 仍由同一个进程按排序加锁, `agent.max-concurrent` 是全局并发上限. 不同 etcd 下的 target ID 可以相同, 因为它们属于不同远端 namespace.
+
+publish, upgrade 与 prune 不再维护独立 management 配置. 它们默认选择 `name: default` 的 etcd; 没有该名字时选择数组第一个 entry. 操作其他 tenant 时传 `--etcd-name <name>`.
+
 ### 本地 seed
 
 `seed` 用于自引用消费者的首装和显式救援. 它读取一个完整 v6 pack, 按 agent 配置中的 target 校验 prefix, target, type, digest, 证书语义, mapping 和有效期, 然后在不访问 etcd 的情况下创建本地 content-addressed release 并原子切换 `current`:
@@ -124,10 +156,9 @@ pemcast \
 使用 native publish 发布:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-ETCDCTL_USER_PUBLISH='publisher-ci:<password>' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
-pemcast publish --pack-dir /secure/tmp/nginx-pack
+pemcast --config config/config.yaml publish \
+  --etcd-name bendian \
+  --pack-dir /secure/tmp/nginx-pack
 ```
 
 publish 读取 pack 后独立重算 encoded hash, 文件 hash, semantic whole digest, generation 和证书语义. 如果 bundle key 已存在, 必须与本地 `bundle.json` bytes 完全相同. 然后捕获 active pointer, 首次发布用 `create(active) = 0` CAS, 更新用 active value + ModRevision CAS. active 已经等于目标 generation 时直接 no-op. etcd transaction 成功即表示本次发布已提交; 若随后被另一个合法发布覆盖, 本次结果仍是 published.
@@ -141,10 +172,8 @@ bundle stage 可能留下未被引用的孤儿 bundle; 这不产生消费者事�
 先执行纯读报告:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast/tenants/example' \
-ETCDCTL_USER_PRUNE='prune-admin:<password>' \
-pemcast prune \
+pemcast --config config/config.yaml prune \
+  --etcd-name example \
   --retention 720h \
   --dry-run
 ```
@@ -154,7 +183,8 @@ pemcast prune \
 确认报告后显式执行:
 
 ```bash
-pemcast prune \
+pemcast --config config/config.yaml prune \
+  --etcd-name example \
   --retention 720h \
   --delete
 ```
@@ -178,10 +208,8 @@ pemcast prune \
 先执行纯读 dry-run:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
-ETCDCTL_USER_UPGRADE='upgrade-admin:<password>' \
-pemcast upgrade \
+pemcast --config config/config.yaml upgrade \
+  --etcd-name default \
   --default-type tls-server \
   --target-type etcd-client=tls-client \
   --dry-run
@@ -202,7 +230,8 @@ v5 没有 server/client 语义, 因此 upgrade 不自动猜 type. 未显式 over
 需要删除旧协议数据时, 必须先停止或禁用旧 v5 publisher, 并显式确认:
 
 ```bash
-pemcast upgrade \
+pemcast --config config/config.yaml upgrade \
+  --etcd-name default \
   --default-type tls-server \
   --target-type etcd-client=tls-client \
   --delete-old-v5 \
@@ -322,14 +351,14 @@ docker run --rm --platform linux/amd64 \
 
 docker run --rm --platform linux/amd64 \
   --volume "${_work}:/work:ro" \
-    -e PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-    -e ETCDCTL_USER_PUBLISH='publish:...' \
-    -e PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
+  --volume "${PEMCAST_CONFIG}:/config.yaml:ro" \
+  -e ETCDCTL_USER_PUBLISH='publish:...' \
   "${_image}" \
-    pemcast publish --pack-dir /work/pack
+  pemcast --config /config.yaml publish \
+    --etcd-name bendian --pack-dir /work/pack
 ```
 
-如果 etcd 使用 mTLS, 同时挂载 CA/client cert/key 并设置 `PEMCAST_AGENT_ETCD_TLS_*` 环境变量. 使用 exact version tag 或 digest.
+如果 etcd 使用 mTLS, 在配置中引用容器内可见的 CA/client cert/key 路径, 并把对应文件挂载进容器. 使用 exact version tag 或 digest.
 
 需要应急或审计时, 可以在 pemcast 镜像外运行仓库中的 `.agents/skills/repo-deployment/scripts/publish-v6.sh`, 手动执行 etcdctl 事务. 该 helper 不进入产品镜像.
 
@@ -338,10 +367,9 @@ docker run --rm --platform linux/amd64 \
 保留旧 pack 目录时, 重新执行 `pemcast publish` 即可把 pointer CAS 回旧 generation:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-ETCDCTL_USER_PUBLISH='publisher-ci:<password>' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
-pemcast publish --pack-dir /secure/archive/nginx-pack-sha256-old
+pemcast --config config/config.yaml publish \
+  --etcd-name bendian \
+  --pack-dir /secure/archive/nginx-pack-sha256-old
 ```
 
 如果旧 pack 目录没有保留, 使用当时完全相同的证书材料和 type 重新 `pemcast tools pack`; deterministic generation 与 bundle bytes 会相同. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.
@@ -354,7 +382,7 @@ pemcast v6 runtime 不读取, 不迁移和不兼容旧协议数据. `upgrade` �
 2. 初始化 v6 active reader, target bundle 和 publisher roles/users.
 3. 执行 `upgrade --dry-run`, 确认 type 映射和 v5 -> v6 generation 对照.
 4. 执行 `upgrade`, 默认保留 v5.
-5. 将 agent 配置和镜像升级到 v6, 保持同一个 `agent.etcd.prefix`.
+5. 将 agent 配置和镜像升级到 v6, 保持同一个 `agent.etcds[].prefix`.
 6. 执行 `agent --once --dry-run`, 再执行一次同步或重启 watch agent.
 7. 用 `etcdctl` 核对 v6 active/bundle 和未授权访问.
 8. 确认所有消费端证书正常且旧客户端不再依赖 v5 后, 使用 `upgrade --delete-old-v5 --yes` 清理, 再按外部策略处理旧 roles/users.
@@ -364,6 +392,7 @@ pemcast v6 runtime 不读取, 不迁移和不兼容旧协议数据. `upgrade` �
 配置的可执行文件会在启用后直接运行, 不经过 shell. 它会从 stdin 接收一个 JSON 事件, 并获得以下环境变量:
 
 ```text
+PEMCAST_SOURCE
 PEMCAST_TARGET
 PEMCAST_GENERATION
 PEMCAST_PREVIOUS_GENERATION
@@ -421,6 +450,7 @@ go test -race ./...
 go run ./cmd/pemcast --help
 go run ./cmd/pemcast --config config/config.yaml config validate
 bash scripts/integration-etcd.sh
+bash scripts/integration-etcd-multi-source.sh
 bash scripts/integration-etcd-seed.sh
 bash scripts/integration-etcd-upgrade.sh
 ```

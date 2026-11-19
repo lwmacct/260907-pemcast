@@ -24,22 +24,38 @@ var Command = &cli.Command{
 		options := cfg.Tools.Seed
 		targetID := options.TargetID
 		var target config.Target
+		prefix := ""
+		var matches []config.Target
+		prefixes := make(map[string]string, len(cfg.Agent.Etcds))
+		for _, source := range cfg.Agent.Etcds {
+			prefixes[source.Name] = source.Prefix
+		}
 		for _, candidate := range cfg.Agent.Targets {
+			if options.Etcd != "" && candidate.Etcd != options.Etcd {
+				continue
+			}
 			if candidate.ID == targetID {
-				target = candidate
-				break
+				matches = append(matches, candidate)
 			}
 		}
-		if target.ID == "" {
-			return fmt.Errorf("target %q is not configured", targetID)
+		if options.Etcd == "" && len(matches) > 1 {
+			return fmt.Errorf("target %q is configured by multiple etcds; pass --etcd", targetID)
 		}
+		if len(matches) != 1 {
+			if options.Etcd == "" {
+				return fmt.Errorf("target %q is not configured", targetID)
+			}
+			return fmt.Errorf("target %q for etcd %q is not configured", targetID, options.Etcd)
+		}
+		target = matches[0]
+		prefix = prefixes[target.Etcd]
 
 		result, err := pack.Read(options.PackDir)
 		if err != nil {
 			return err
 		}
 		materialOptions := internalseed.Options{
-			Target: target, Pack: result, Prefix: cfg.Agent.Etcd.Prefix,
+			Target: target, Pack: result, Prefix: prefix,
 			Force: options.Force,
 		}
 		if _, err := internalseed.Material(materialOptions); err != nil {

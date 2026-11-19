@@ -15,6 +15,7 @@ type Report struct {
 
 type TargetStatus struct {
 	ID          string        `json:"id"`
+	Etcd        string        `json:"etcd,omitempty"`
 	Type        string        `json:"type"`
 	OutputRoot  string        `json:"output-root"`
 	CurrentLink string        `json:"current-link"`
@@ -36,6 +37,7 @@ func Build(cfg config.Config) Report {
 	for _, target := range cfg.Agent.Targets {
 		item := TargetStatus{
 			ID:          target.ID,
+			Etcd:        target.Etcd,
 			Type:        target.Type,
 			OutputRoot:  target.Output.Root,
 			CurrentLink: target.Output.CurrentLink,

@@ -15,7 +15,7 @@ import (
 var Command = &cli.Command{
 	Name:  "agent",
 	Usage: "watch etcd and atomically synchronize local TLS certificate files",
-	Action: config.ActionWithEtcdUserTemplate(
+	Action: config.Manager.Action(
 		func(ctx context.Context, _ *cli.Command, cfg *config.Config) error {
 			application, err := New(*cfg, slog.Default())
 			if err != nil {
@@ -25,6 +25,5 @@ var Command = &cli.Command{
 			closeErr := application.Close()
 			return errors.Join(runErr, closeErr)
 		},
-		config.AgentEtcdUserTemplate,
 	),
 }

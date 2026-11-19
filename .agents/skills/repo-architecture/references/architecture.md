@@ -10,7 +10,9 @@ pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast too
 
 ## 运行流程
 
-启动时校验配置. 非 dry-run agent 按排序获取每个 output root 的排他文件锁, 构造 etcd client, 并组装 reconcile controller. dry-run 不获取 output root 锁.
+启动时校验配置. 非 dry-run agent 按排序获取每个 output root 的排他文件锁. 单 tenant 配置构造一个 etcd client; `agent.etcds[]` 配置为每个 tenant 构造独立 etcd client, snapshot/watch session 与 reconcile controller, 并在同一个进程中并发运行. 所有 controller 共享全局 `agent.max-concurrent` 信号量. dry-run 不获取 output root 锁.
+
+publish, upgrade 与 prune 是单 etcd 管理命令. 它们从同一个 `agent.etcds[]` 数组选择连接: 未显式指定时优先选择 `name: default`, 否则选择第一个 entry. `user` 仅供 agent watcher 使用, `management-user` 供管理命令使用, 后者为空时保留命令特定环境凭据 fallback.
 
 `agent --once` 一次 range read 读取 active prefix 下全部 pointer, 得到同一个 revision 的 snapshot, 然后 reconcile 配置 target 的交集. 普通 agent 循环执行:
 
@@ -19,8 +21,8 @@ pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast too
 3. 从 `snapshot.Revision` 起监听 active prefix, 并丢弃 `revision <= snapshot.Revision` 的重复事件, 因此有效事件边界仍是 snapshot 之后的 revision.
 4. 处理 pointer put/delete; bundle stage 不产生 watch 事件.
 5. 长驻 watcher 按 `progress-interval` 发送 manual progress request.
-6. 超过 `progress-timeout` 没有 event/progress, 或 watch 返回协议错误时, 放弃 session 并从新 snapshot 重启.
-7. snapshot/watch 失败时使用有界指数退避和 jitter 重试.
+6. 超过 `progress-timeout` 没有 event/progress, 或 watch 返回协议错误时, 放弃该 etcd 的 session 并从新 snapshot 重启.
+7. 每个 etcd 的 snapshot/watch 失败使用独立有界指数退避和 jitter 重试, 不阻止其他 etcd.
 
 watch 模式中单个 reconcile 失败只记录日志, 不停止进程.
 snapshot 与 exact bundle read 使用短生命周期 etcd client, 避免空闲后复用过期 auth token; 长驻 client 只承担 watch stream, 断线重建 stream 时由官方 client 重新认证.
@@ -234,7 +236,7 @@ hook 在 symlink 切换后执行. 失败记录在进程内 pending hook 状态; 
 ## 包地图
 
 - `cmd/pemcast`: CLI 入口和 signal context.
-- `internal/appcmd/agent`: application 组装, output lock 与 once/watch 生命周期.
+- `internal/appcmd/agent`: application 组装, 单/多 etcd runtime, output lock 与 once/watch 生命周期.
 - `internal/appcmd/config`: config example 和校验命令.
 - `internal/appcmd/tools/pack`: local pack CLI adapter.
 - `internal/appcmd/publish`: v6 staged publication CLI adapter.

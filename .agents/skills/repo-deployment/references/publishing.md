@@ -1,6 +1,6 @@
 # 发布 pemcast v6 bundle
 
-etcd namespace prefix 默认 `/pemcast`. pack CLI 通过 `--etcd-prefix` 配置, publish 与 agent 使用 `agent.etcd.prefix`. 固定子协议是 `/v6`:
+etcd namespace prefix 默认 `/pemcast`. pack CLI 通过 `--etcd-prefix` 配置, publish 与 agent 共用 `agent.etcds[]` 中对应 entry 的 prefix. 固定子协议是 `/v6`:
 
 ```text
 /pemcast/v6/active/nginx = sha256-<bundle-digest>
@@ -52,13 +52,12 @@ pemcast tools pack \
 
 ## 推荐 publish
 
-`pemcast publish` 复用 `agent.etcd` 的 endpoints, TLS, timeout 和 prefix 配置; user 由命令特定环境模板解析:
+`pemcast publish` 复用 `agent.etcds[]` 的 endpoints, TLS 和 timeout; 未指定 `--etcd-name` 时选择 `name: default`, 没有该名字时选择数组第一个. `management-user` 非空时直接作为管理凭据, 为空时使用命令特定环境模板:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-ETCDCTL_USER_PUBLISH='publisher-ci:<password>' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
-pemcast publish --pack-dir /secure/tmp/nginx-pack
+pemcast --config /etc/pemcast/config.yaml publish \
+  --etcd-name default \
+  --pack-dir /secure/tmp/nginx-pack
 ```
 
 也可以使用配置文件:
@@ -76,7 +75,7 @@ publish 的 user 环境变量优先级是 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`
 3. 严格解码 bundle, 重算每个文件 hash, whole digest 和 generation.
 4. 校验与 type 匹配的证书语义.
 5. 校验 metadata prefix, target, active key 和 bundle key.
-6. 拒绝 pack prefix 与当前 `agent.etcd.prefix` 不一致.
+6. 拒绝 pack prefix 与选中 `agent.etcds[].prefix` 不一致.
 7. Stage immutable bundle; 同 generation 已存在时要求 bytes 完全相同.
 8. 捕获 active value 与 ModRevision.
 9. active 已等于目标 generation 时返回 no-op.
@@ -90,10 +89,8 @@ bundle stage 可能留下未被引用的孤儿 bundle. 这是允许的中间状�
 当同一个 etcd prefix 中仍有 canonical v5 active bundle 时, 可以用顶层 `pemcast upgrade` 做一次式迁移. 它与 `publish` 平级, 不是离线 tools 命令.
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
-ETCDCTL_USER_UPGRADE='upgrade-admin:<password>' \
-pemcast upgrade \
+pemcast --config /etc/pemcast/config.yaml upgrade \
+  --etcd-name default \
   --default-type tls-server \
   --target-type etcd-client=tls-client \
   --dry-run
@@ -117,10 +114,8 @@ upgrade 只迁移 v5 active pointer 指向的 bundle, 不迁移历史 generation
 先使用纯读报告观察非 active identity bundle:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast/tenants/example' \
-ETCDCTL_USER_PRUNE='prune-admin:<password>' \
-pemcast prune \
+pemcast --config /etc/pemcast/config.yaml prune \
+  --etcd-name example \
   --retention 720h \
   --dry-run
 ```
@@ -130,7 +125,8 @@ pemcast prune \
 确认报告后才可显式执行:
 
 ```bash
-pemcast prune \
+pemcast --config /etc/pemcast/config.yaml prune \
+  --etcd-name example \
   --retention 720h \
   --delete
 ```
@@ -181,10 +177,9 @@ pemcast --config /etc/pemcast/config.yaml status --json
 回滚是重新执行旧 pack 的 pointer CAS, 不重写 bundle:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-ETCDCTL_USER_PUBLISH='publisher-ci:<password>' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
-pemcast publish --pack-dir /secure/archive/nginx-pack-sha256-old
+pemcast --config /etc/pemcast/config.yaml publish \
+  --etcd-name default \
+  --pack-dir /secure/archive/nginx-pack-sha256-old
 ```
 
 如果旧 pack 目录没有保留, 使用当时完全相同的证书材料和 type 重新 `pemcast tools pack`; deterministic generation 与 bundle bytes 会相同. 不建议只凭 generation 字符串盲写 pointer. 回滚后执行 `agent --once --dry-run` 和 `agent --once`.

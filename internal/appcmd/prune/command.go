@@ -19,7 +19,7 @@ var Command = &cli.Command{
 	Name:  "prune",
 	Usage: "report or delete non-active identity bundles past certificate retention",
 	Flags: []cli.Flag{
-		&cli.StringFlag{Name: "etcd-prefix", Usage: "override agent.etcd.prefix for this operation"},
+		&cli.StringFlag{Name: "etcd-name", Usage: "agent.etcds name; defaults to default or the first entry"},
 		&cli.DurationFlag{Name: "retention", Usage: "keep inactive identity bundles for this long after their earliest certificate NotAfter", Value: 720 * time.Hour},
 		&cli.BoolFlag{Name: "dry-run", Usage: "report candidates without writing etcd"},
 		&cli.BoolFlag{Name: "delete", Usage: "delete eligible non-active identity bundles with exact-key conditional transactions"},
@@ -29,22 +29,18 @@ var Command = &cli.Command{
 		if dryRun == delete {
 			return fmt.Errorf("choose exactly one of --dry-run or --delete")
 		}
-		cfg, err := config.LoadEtcdCommand(ctx, command.Root(), config.PruneEtcdUserTemplate)
+		etcd, err := config.ResolveEtcdCommand(
+			ctx, command.Root(), command.String("etcd-name"), config.PruneEtcdUserTemplate,
+		)
 		if err != nil {
 			return err
 		}
-		if command.IsSet("etcd-prefix") {
-			cfg.Agent.Etcd.Prefix = command.String("etcd-prefix")
-		}
-		if err := cfg.Agent.ValidateCommon(); err != nil {
-			return err
-		}
-		keys, err := keyspace.NewKeys(cfg.Agent.Etcd.Prefix)
+		keys, err := keyspace.NewKeys(etcd.Prefix)
 		if err != nil {
 			return err
 		}
 
-		client, err := etcdsource.New(cfg.Agent.Etcd)
+		client, err := etcdsource.New(etcd)
 		if err != nil {
 			return err
 		}

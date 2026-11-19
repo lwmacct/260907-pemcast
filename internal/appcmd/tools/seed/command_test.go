@@ -66,6 +66,29 @@ func TestSeedCommandRejectsPackTargetMismatch(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(root, ".pemcast"))
 }
 
+func TestSeedCommandSelectsTargetSource(t *testing.T) {
+	bendianRoot := filepath.Join(t.TempDir(), "bendian")
+	lwmacctRoot := filepath.Join(t.TempDir(), "lwmacct")
+	packDir := writePackWithPrefix(t, "shared", "bendian-shared", "/tenants/bendian")
+	configurationPath := writeMultiSourceConfiguration(t, bendianRoot, lwmacctRoot)
+
+	arguments := []string{
+		"pemcast", "--config", configurationPath,
+		"tools", "seed", "--target", "shared", "--etcd", "bendian", "--pack-dir", packDir,
+	}
+	configureOnce.Do(func() { appconfig.Manager.MustConfigure(application) })
+	require.NoError(t, application.Run(t.Context(), arguments))
+	require.FileExists(t, filepath.Join(bendianRoot, "current", "fullchain.pem"))
+	require.NoDirExists(t, lwmacctRoot)
+
+	arguments = []string{
+		"pemcast", "--config", configurationPath,
+		"tools", "seed", "--target", "shared", "--pack-dir", packDir,
+	}
+	err := application.Run(t.Context(), arguments)
+	require.ErrorContains(t, err, "pass --etcd")
+}
+
 func runCommand(t *testing.T, root, packDir string, force bool) error {
 	t.Helper()
 
@@ -100,11 +123,15 @@ func writeConfiguration(t *testing.T, root string) string {
 
 	configurationPath := filepath.Join(t.TempDir(), "config.yaml")
 	configuration := fmt.Sprintf(`agent:
-  etcd:
-    endpoints: ["http://127.0.0.1:1"]
-    prefix: /pemcast
+  etcds:
+    - name: default
+      endpoints: ["http://127.0.0.1:1"]
+      prefix: /pemcast
+      dial-timeout: 1s
+      request-timeout: 1s
   targets:
     - id: nginx
+      etcd: default
       type: tls-server
       delete-policy: retain
       output:
@@ -123,6 +150,58 @@ func writeConfiguration(t *testing.T, root string) string {
         reject-expired: true
         minimum-validity: 1h
 `, root)
+	require.NoError(t, os.WriteFile(configurationPath, []byte(configuration), 0o600))
+	return configurationPath
+}
+
+func writeMultiSourceConfiguration(t *testing.T, bendianRoot, lwmacctRoot string) string {
+	t.Helper()
+
+	configurationPath := filepath.Join(t.TempDir(), "config.yaml")
+	configuration := fmt.Sprintf(`agent:
+  etcds:
+    - name: bendian
+      endpoints: ["http://127.0.0.1:1"]
+      prefix: /tenants/bendian
+      dial-timeout: 1s
+      request-timeout: 1s
+    - name: lwmacct
+      endpoints: ["http://127.0.0.1:1"]
+      prefix: /tenants/lwmacct
+      dial-timeout: 1s
+      request-timeout: 1s
+  targets:
+    - id: shared
+      etcd: bendian
+      type: tls-server
+      delete-policy: retain
+      output:
+        root: %s
+        current-link: current
+        directory-mode: "0700"
+        mappings:
+          - remote: fullchain.pem
+            local: fullchain.pem
+            mode: "0644"
+          - remote: privkey.pem
+            local: privkey.pem
+            mode: "0600"
+    - id: shared
+      etcd: lwmacct
+      type: tls-server
+      delete-policy: retain
+      output:
+        root: %s
+        current-link: current
+        directory-mode: "0700"
+        mappings:
+          - remote: fullchain.pem
+            local: fullchain.pem
+            mode: "0644"
+          - remote: privkey.pem
+            local: privkey.pem
+            mode: "0600"
+`, bendianRoot, lwmacctRoot)
 	require.NoError(t, os.WriteFile(configurationPath, []byte(configuration), 0o600))
 	return configurationPath
 }
@@ -150,6 +229,21 @@ func writePack(t *testing.T, root, targetID, commonName string, lifetime time.Du
 	result, err := pack.Build(pack.Options{
 		Type:     "tls-server",
 		TargetID: targetID, EtcdPrefix: "/pemcast",
+		CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
+	})
+	require.NoError(t, err)
+	packDir := filepath.Join(t.TempDir(), "pack")
+	require.NoError(t, pack.Write(packDir, result))
+	return packDir
+}
+
+func writePackWithPrefix(t *testing.T, targetID, commonName, etcdPrefix string) string {
+	t.Helper()
+
+	certificatePath, privateKeyPath := writeKeyPair(t, commonName, 2*time.Hour)
+	result, err := pack.Build(pack.Options{
+		Type:     "tls-server",
+		TargetID: targetID, EtcdPrefix: etcdPrefix,
 		CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
 	})
 	require.NoError(t, err)

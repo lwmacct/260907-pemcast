@@ -18,9 +18,9 @@ func dryRunConfig(t *testing.T) config.Config {
 
 	cfg := config.ExampleConfig()
 	cfg.Agent.DryRun = true
-	cfg.Agent.Etcd.Endpoints = []string{"http://127.0.0.1:1"}
-	cfg.Agent.Etcd.DialTimeout = 10 * time.Millisecond
-	cfg.Agent.Etcd.RequestTimeout = 10 * time.Millisecond
+	cfg.Agent.Etcds[0].Endpoints = []string{"http://127.0.0.1:1"}
+	cfg.Agent.Etcds[0].DialTimeout = 10 * time.Millisecond
+	cfg.Agent.Etcds[0].RequestTimeout = 10 * time.Millisecond
 	cfg.Agent.Targets[0].Output.Root = filepath.Join(t.TempDir(), "tls")
 	return cfg
 }

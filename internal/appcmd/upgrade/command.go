@@ -18,7 +18,7 @@ var Command = &cli.Command{
 	Name:  "upgrade",
 	Usage: "migrate active pemcast v5 data below one etcd prefix to v6",
 	Flags: []cli.Flag{
-		&cli.StringFlag{Name: "etcd-prefix", Usage: "override agent.etcd.prefix for this upgrade"},
+		&cli.StringFlag{Name: "etcd-name", Usage: "agent.etcds name; defaults to default or the first entry"},
 		&cli.StringFlag{Name: "default-type", Usage: "v6 type for targets without --target-type (tls-server or tls-client)"},
 		&cli.StringSliceFlag{Name: "target-type", Usage: "repeat target-id=tls-server|tls-client for per-target overrides"},
 		&cli.BoolFlag{Name: "dry-run", Usage: "validate and print the migration plan without writing etcd"},
@@ -26,17 +26,13 @@ var Command = &cli.Command{
 		&cli.BoolFlag{Name: "yes", Usage: "confirm destructive options such as --delete-old-v5"},
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
-		cfg, err := config.LoadEtcdCommand(ctx, command.Root(), config.UpgradeEtcdUserTemplate)
+		etcd, err := config.ResolveEtcdCommand(
+			ctx, command.Root(), command.String("etcd-name"), config.UpgradeEtcdUserTemplate,
+		)
 		if err != nil {
 			return err
 		}
-		if command.IsSet("etcd-prefix") {
-			cfg.Agent.Etcd.Prefix = command.String("etcd-prefix")
-		}
-		if err := cfg.Agent.ValidateCommon(); err != nil {
-			return err
-		}
-		keys, err := keyspace.NewKeys(cfg.Agent.Etcd.Prefix)
+		keys, err := keyspace.NewKeys(etcd.Prefix)
 		if err != nil {
 			return err
 		}
@@ -45,7 +41,7 @@ var Command = &cli.Command{
 			return err
 		}
 
-		client, err := etcdsource.New(cfg.Agent.Etcd)
+		client, err := etcdsource.New(etcd)
 		if err != nil {
 			return err
 		}

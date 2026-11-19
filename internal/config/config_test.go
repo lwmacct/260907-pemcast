@@ -23,23 +23,8 @@ func TestWriteConfigExample(t *testing.T) {
 func TestRuntimeConfigKeysValid(t *testing.T) { files.ValidateRuntimeConfig(t) }
 
 func TestDefaultConfigHasNoTargets(t *testing.T) {
-	if got := DefaultConfig().Agent.Targets; len(got) != 0 {
+	if got := DefaultConfig().Agent.Etcds; len(got) != 0 {
 		t.Fatalf("DefaultConfig() targets = %#v, want none", got)
-	}
-}
-
-func TestDefaultConfigUsesDefaultEtcdPrefix(t *testing.T) {
-	if got := DefaultConfig().Agent.Etcd.Prefix; got != DefaultEtcdPrefix {
-		t.Fatalf("default etcd prefix = %q, want %q", got, DefaultEtcdPrefix)
-	}
-}
-
-func TestValidateCommonAcceptsCustomEtcdPrefix(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Agent.Etcd.Prefix = "/tenants/example"
-
-	if err := cfg.Agent.ValidateCommon(); err != nil {
-		t.Fatalf("ValidateCommon() error = %v", err)
 	}
 }
 
@@ -151,7 +136,7 @@ func TestPruneEtcdUserTemplateFallback(t *testing.T) {
 }
 
 func TestExampleConfigHasRepresentativeTarget(t *testing.T) {
-	got := ExampleConfig().Agent.Targets
+	got := ExampleConfig().Agent.AllTargets()
 	if len(got) != 1 || got[0].ID != "nginx" {
 		t.Fatalf("ExampleConfig() targets = %#v, want one nginx target", got)
 	}

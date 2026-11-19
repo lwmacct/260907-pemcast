@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -20,6 +21,7 @@ func statusConfig(t *testing.T) (config.Config, string) {
 	cfg := config.DefaultConfig()
 	cfg.Agent.Targets = []config.Target{{
 		ID:   "nginx",
+		Etcd: "default",
 		Type: bundle.TypeTLSServer,
 		Output: config.Output{
 			Root: outputRoot, CurrentLink: "current", DirectoryMode: config.FileMode("0700"),
@@ -29,6 +31,10 @@ func statusConfig(t *testing.T) (config.Config, string) {
 			},
 		},
 	}}
+	cfg.Agent.Etcds = []config.Source{{
+		Name: "default", Prefix: "/pemcast", Endpoints: []string{"http://127.0.0.1:1"},
+		DialTimeout: time.Second, RequestTimeout: time.Second,
+	}}
 	return cfg, outputRoot
 }
 
@@ -37,6 +43,7 @@ func TestBuildReportsMissingCurrentWithoutWriting(t *testing.T) {
 	report := Build(cfg)
 
 	require.Len(t, report.Targets, 1)
+	require.Equal(t, "default", report.Targets[0].Etcd)
 	require.Equal(t, "missing", report.Targets[0].Current.Status)
 	require.Empty(t, report.Targets[0].Current.Error)
 	require.NoDirExists(t, outputRoot)

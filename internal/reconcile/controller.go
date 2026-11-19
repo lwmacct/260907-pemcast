@@ -48,6 +48,13 @@ type validityState struct {
 	rejectExpired   bool
 }
 
+// Config describes the controller-owned subset of agent runtime settings.
+type Config struct {
+	Targets       []config.Target
+	DryRun        bool
+	MaxConcurrent int
+}
+
 // Controller reconciles configured targets. Each target is serialized while
 // different targets may execute concurrently.
 type Controller struct {
@@ -59,6 +66,7 @@ type Controller struct {
 	validityMu   sync.Mutex
 	validity     map[string]validityState
 	targets      map[string]config.Target
+	sourceName   string
 	dryRun       bool
 	semaphore    chan struct{}
 	locks        sync.Map
@@ -67,16 +75,40 @@ type Controller struct {
 	hookRetryMax time.Duration
 }
 
-func New(source Source, deployer Deployer, hooks HookRunner, cfg config.Agent, logger *slog.Logger) *Controller {
+func New(source Source, deployer Deployer, hooks HookRunner, cfg Config, logger *slog.Logger) *Controller {
+	return NewWithSemaphore(source, deployer, hooks, cfg, logger, make(chan struct{}, cfg.MaxConcurrent))
+}
+
+// NewWithSemaphore allows callers that run multiple controllers in one
+// process to share one global target concurrency limit.
+func NewWithSemaphore(
+	source Source, deployer Deployer, hooks HookRunner, cfg Config, logger *slog.Logger,
+	semaphore chan struct{},
+) *Controller {
+	return newController(source, deployer, hooks, cfg, logger, semaphore, "")
+}
+
+// NewForSource associates a controller with an agent-local source name for
+// hook events while preserving the remote target ID as the protocol identity.
+func NewForSource(
+	source Source, deployer Deployer, hooks HookRunner, cfg Config, logger *slog.Logger,
+	semaphore chan struct{}, sourceName string,
+) *Controller {
+	return newController(source, deployer, hooks, cfg, logger, semaphore, sourceName)
+}
+
+func newController(
+	source Source, deployer Deployer, hooks HookRunner, cfg Config, logger *slog.Logger,
+	semaphore chan struct{}, sourceName string,
+) *Controller {
 	targets := make(map[string]config.Target, len(cfg.Targets))
 	for _, target := range cfg.Targets {
 		targets[target.ID] = target
 	}
 	return &Controller{
 		source: source, deployer: deployer, hooks: hooks,
-		hookDue:  make(map[string]*pendingHook),
-		validity: make(map[string]validityState),
-		targets:  targets, dryRun: cfg.DryRun, semaphore: make(chan struct{}, cfg.MaxConcurrent),
+		hookDue: make(map[string]*pendingHook), validity: make(map[string]validityState),
+		targets: targets, dryRun: cfg.DryRun, semaphore: semaphore, sourceName: sourceName,
 		logger: logger, hookRetryMin: time.Second, hookRetryMax: 30 * time.Second,
 	}
 }
@@ -144,7 +176,7 @@ func (c *Controller) reconcile(
 	if !result.Changed && !c.hasPendingHook(id) && !runUnchangedHook {
 		return nil
 	}
-	event := hookEvent(target, generation, revision, material, result)
+	event := c.hookEvent(target, generation, revision, material, result)
 	if err := c.hooks.Run(ctx, target.Hook, event); err != nil {
 		c.recordHookFailure(target, material, event, err)
 		return fmt.Errorf("run target %q hook: %w", id, err)
@@ -192,7 +224,7 @@ func (c *Controller) ReconcileSnapshot(
 	return errors.Join(joined...)
 }
 
-func hookEvent(
+func (c *Controller) hookEvent(
 	target config.Target, generation string, revision int64,
 	material *bundle.Material, result deploy.Result,
 ) hook.Event {
@@ -205,7 +237,7 @@ func hookEvent(
 		releaseDir = result.CurrentDir
 	}
 	return hook.Event{
-		TargetID: target.ID, Generation: generation, EtcdRevision: revision,
+		Source: c.sourceName, TargetID: target.ID, Generation: generation, EtcdRevision: revision,
 		ReleaseDir: releaseDir, CurrentDir: result.CurrentDir, ChangedFiles: changed,
 		BundleSHA256: material.Digest, ActivatedAt: time.Now(),
 	}

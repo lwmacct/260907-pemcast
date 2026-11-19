@@ -19,6 +19,7 @@ import (
 
 // Event is delivered to the hook as JSON on stdin and selected environment variables.
 type Event struct {
+	Source             string    `json:"source,omitempty"`
 	TargetID           string    `json:"target-id"`
 	Generation         string    `json:"generation"`
 	PreviousGeneration string    `json:"previous-generation"`
@@ -85,6 +86,7 @@ func hookEnvironment(pass []string, event Event) []string {
 		}
 	}
 	values["PEMCAST_TARGET"] = event.TargetID
+	values["PEMCAST_SOURCE"] = event.Source
 	values["PEMCAST_GENERATION"] = event.Generation
 	values["PEMCAST_PREVIOUS_GENERATION"] = event.PreviousGeneration
 	values["PEMCAST_ETCD_REVISION"] = strconv.FormatInt(event.EtcdRevision, 10)

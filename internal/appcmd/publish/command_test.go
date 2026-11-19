@@ -46,9 +46,12 @@ func runCommand(t *testing.T, packDir, etcdPrefix string) error {
 
 	configurationPath := filepath.Join(t.TempDir(), "config.yaml")
 	configuration := `agent:
-  etcd:
-    endpoints: ["http://127.0.0.1:1"]
-    prefix: /pemcast
+  etcds:
+    - name: default
+      endpoints: ["http://127.0.0.1:1"]
+      prefix: /pemcast
+      dial-timeout: 1s
+      request-timeout: 1s
 `
 	require.NoError(t, os.WriteFile(configurationPath, []byte(configuration), 0o600))
 
@@ -58,9 +61,6 @@ func runCommand(t *testing.T, packDir, etcdPrefix string) error {
 	}
 	appconfig.Manager.MustConfigure(application)
 	arguments := []string{"pemcast", "--config", configurationPath, "publish", "--pack-dir", packDir}
-	if etcdPrefix != "" {
-		arguments = append(arguments, "--etcd-prefix", etcdPrefix)
-	}
 	return application.Run(t.Context(), arguments)
 }
 

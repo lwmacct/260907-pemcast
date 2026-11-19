@@ -185,11 +185,11 @@ func testMaterial(t *testing.T, digest string) *bundle.Material {
 	}
 }
 
-func testAgentConfig(targets ...config.Target) config.Agent {
+func testControllerConfig(targets ...config.Target) Config {
 	if len(targets) == 0 {
 		targets = []config.Target{testTarget("nginx")}
 	}
-	return config.Agent{MaxConcurrent: 4, Targets: targets}
+	return Config{MaxConcurrent: 4, Targets: targets}
 }
 
 func testTarget(id string) config.Target {
@@ -208,7 +208,7 @@ func testTarget(id string) config.Target {
 	}
 }
 
-func newTestController(source Source, deployer Deployer, hooks HookRunner, cfg config.Agent) *Controller {
+func newTestController(source Source, deployer Deployer, hooks HookRunner, cfg Config) *Controller {
 	return New(source, deployer, hooks, cfg, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
 }
 
@@ -216,7 +216,7 @@ func TestReconcileFetchFailureDoesNotTouchLocalState(t *testing.T) {
 	source := &fakeSource{err: errors.New("remote unavailable")}
 	deployer := &fakeDeployer{}
 	hooks := &fakeHookRunner{}
-	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testControllerConfig())
 
 	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
 	if err == nil || !errors.Is(err, source.err) {
@@ -233,7 +233,7 @@ func TestReconcileValidationFailureStopsBeforeState(t *testing.T) {
 	source := &fakeSource{material: material}
 	deployer := &fakeDeployer{}
 	hooks := &fakeHookRunner{}
-	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testControllerConfig())
 
 	err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42)
 	if err == nil {
@@ -248,7 +248,7 @@ func TestReconcileDryRunDoesNotWrite(t *testing.T) {
 	source := &fakeSource{material: testMaterial(t, "digest")}
 	deployer := &fakeDeployer{}
 	hooks := &fakeHookRunner{}
-	cfg := testAgentConfig()
+	cfg := testControllerConfig()
 	cfg.DryRun = true
 	controller := newTestController(source, deployer, hooks, cfg)
 
@@ -267,7 +267,7 @@ func TestReconcileChangedDigestRunsHookAndSavesState(t *testing.T) {
 		Changed: true, ReleaseDir: "/tmp/pemcast/nginx/.pemcast/releases/digest", CurrentDir: "/tmp/pemcast/nginx/current",
 	}}
 	hooks := &fakeHookRunner{}
-	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testControllerConfig())
 
 	if err := controller.Reconcile(t.Context(), "nginx", "generation-1", 42); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -294,7 +294,7 @@ func TestReconcileRecordsHookFailureAndRetriesWithoutRewritingRelease(t *testing
 	}}
 	hookFailure := errors.New("reload failed")
 	hooks := &fakeHookRunner{errs: []error{hookFailure, nil}}
-	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testControllerConfig())
 	controller.hookRetryMin = time.Nanosecond
 	controller.hookRetryMax = time.Nanosecond
 
@@ -327,7 +327,7 @@ func TestReconcileSnapshotCanRunUnchangedHook(t *testing.T) {
 	source := &fakeSource{material: testMaterial(t, "digest")}
 	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
 	hooks := &fakeHookRunner{}
-	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testControllerConfig())
 
 	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{
 		Active: map[string]string{"nginx": "generation-1"}, Revision: 42,
@@ -344,7 +344,7 @@ func TestNewTargetEventReplacesPendingHook(t *testing.T) {
 		CurrentDir: "/tmp/pemcast/nginx/current",
 	}}
 	hooks := &fakeHookRunner{errs: []error{errors.New("reload failed")}}
-	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testControllerConfig())
 
 	require.Error(t, controller.Reconcile(t.Context(), "nginx", "generation-1", 42))
 	require.Contains(t, controller.hookDue, "nginx")
@@ -369,7 +369,7 @@ func TestHookRetryVerifiesReleaseBeforeRunningHook(t *testing.T) {
 		CurrentDir: "/tmp/pemcast/nginx/current",
 	}}
 	hooks := &fakeHookRunner{errs: []error{errors.New("reload failed")}}
-	controller := newTestController(source, deployer, hooks, testAgentConfig())
+	controller := newTestController(source, deployer, hooks, testControllerConfig())
 	controller.hookRetryMin = time.Nanosecond
 	controller.hookRetryMax = time.Nanosecond
 
@@ -394,7 +394,7 @@ func TestHookRetryVerifiesReleaseBeforeRunningHook(t *testing.T) {
 func TestValidityBoundaryIsCheckedWithoutAnotherRemoteFetch(t *testing.T) {
 	source := &fakeSource{material: testMaterial(t, "digest")}
 	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
-	cfg := testAgentConfig()
+	cfg := testControllerConfig()
 	cfg.Targets[0].Validation.MinimumValidity = 30 * time.Minute
 	controller := newTestController(source, deployer, &fakeHookRunner{}, cfg)
 	controller.hookRetryMin = time.Hour
@@ -412,14 +412,14 @@ func TestValidityBoundaryIsCheckedWithoutAnotherRemoteFetch(t *testing.T) {
 }
 
 func TestReconcileSnapshotDeletePolicies(t *testing.T) {
-	cfg := testAgentConfig(testTarget("retain"))
+	cfg := testControllerConfig(testTarget("retain"))
 	cfg.Targets[0].DeletePolicy = "retain"
 	controller := newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, cfg)
 	if err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}}, false); err != nil {
 		t.Fatalf("retain policy returned error: %v", err)
 	}
 
-	cfg = testAgentConfig(testTarget("fail"))
+	cfg = testControllerConfig(testTarget("fail"))
 	cfg.Targets[0].DeletePolicy = "fail"
 	controller = newTestController(&fakeSource{}, &fakeDeployer{}, &fakeHookRunner{}, cfg)
 	err := controller.ReconcileSnapshot(t.Context(), etcdsource.Snapshot{Active: map[string]string{}}, false)
@@ -431,7 +431,7 @@ func TestReconcileSnapshotDeletePolicies(t *testing.T) {
 func TestReconcileSerializesSameTarget(t *testing.T) {
 	source := &fakeSource{material: testMaterial(t, "digest"), delay: 10 * time.Millisecond}
 	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
-	controller := newTestController(source, deployer, &fakeHookRunner{}, testAgentConfig())
+	controller := newTestController(source, deployer, &fakeHookRunner{}, testControllerConfig())
 
 	var wg sync.WaitGroup
 	for range 4 {
@@ -454,7 +454,7 @@ func TestReconcileSerializesSameTarget(t *testing.T) {
 func TestReconcileSnapshotLimitsGlobalConcurrency(t *testing.T) {
 	source := &fakeSource{material: testMaterial(t, "digest"), delay: 10 * time.Millisecond}
 	deployer := &fakeDeployer{result: deploy.Result{CurrentDir: "/tmp/pemcast/nginx/current"}}
-	cfg := testAgentConfig(testTarget("one"), testTarget("two"), testTarget("three"))
+	cfg := testControllerConfig(testTarget("one"), testTarget("two"), testTarget("three"))
 	cfg.MaxConcurrent = 1
 	controller := newTestController(source, deployer, &fakeHookRunner{}, cfg)
 

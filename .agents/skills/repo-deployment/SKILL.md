@@ -9,7 +9,7 @@ description: "配置和运行 pemcast, 用 pack 加 publish 发布或回滚 cont
 
 - agent 配置, 启动, container 接线, 失败行为, 回滚或清理: 阅读 [references/operation.md](references/operation.md).
 - 初始化 broad prefix RBAC, 或在明确需要更强隔离时选择 target 级 RBAC: 阅读 [references/operation.md](references/operation.md), 确认目标后优先运行 [scripts/init-rbac.sh](scripts/init-rbac.sh).
-- 使用 `agent.etcd.prefix` / `--etcd-prefix` 作为租户或环境 namespace: 阅读 [references/operation.md](references/operation.md). 一个 prefix 隔离一组 v6 targets; 不同租户使用不同 prefix 和不同 etcd users.
+- 使用 `agent.etcds[].prefix` / `--etcd-prefix` 作为租户或环境 namespace: 阅读 [references/operation.md](references/operation.md). 一个 prefix 隔离一组 v6 targets; 不同租户使用不同 prefix 和不同 etcd users.
 - 创建, 发布, 校验或回滚 etcd v6 content-addressed generation: 阅读 [references/publishing.md](references/publishing.md).
 - 将一个 etcd prefix 的 canonical v5 active 数据升级到 v6, 或清理旧 v5 prefix: 阅读 [references/publishing.md](references/publishing.md) 和 [references/operation.md](references/operation.md).
 - 报告或清理非 active 的过期 identity bundle: 阅读 [references/publishing.md](references/publishing.md).

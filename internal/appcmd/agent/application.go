@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/lwmacct/260907-pemcast/internal/config"
@@ -16,11 +17,16 @@ import (
 
 // Application owns the agent runtime and its dependencies.
 type Application struct {
-	config     config.Agent
+	config   config.Agent
+	runtimes []*sourceRuntime
+	locks    []*deploy.RootLock
+	logger   *slog.Logger
+}
+
+type sourceRuntime struct {
+	name       string
 	source     *etcdsource.Client
 	controller *reconcile.Controller
-	locks      []*deploy.RootLock
-	logger     *slog.Logger
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
@@ -33,25 +39,45 @@ func New(cfg config.Config, logger *slog.Logger) (*Application, error) {
 	var locks []*deploy.RootLock
 	var err error
 	if !cfg.Agent.DryRun {
-		locks, err = deploy.LockRoots(cfg.Agent.Targets)
+		locks, err = deploy.LockRoots(cfg.Agent.AllTargets())
 		if err != nil {
 			return nil, err
 		}
 	}
-	source, err := etcdsource.New(cfg.Agent.Etcd)
+	runtimeConfigs, err := cfg.Agent.SourceRuntimes()
 	if err != nil {
 		closeRootLocks(locks)
 		return nil, err
 	}
-	controller := reconcile.New(source, deploy.New(), hook.New(), cfg.Agent, logger)
-	return &Application{config: cfg.Agent, source: source, controller: controller, locks: locks, logger: logger}, nil
+	runtimes := make([]*sourceRuntime, 0, len(runtimeConfigs))
+	semaphore := make(chan struct{}, cfg.Agent.MaxConcurrent)
+	for _, runtimeConfig := range runtimeConfigs {
+		source, err := etcdsource.New(runtimeConfig.Etcd)
+		if err != nil {
+			closeSources(runtimes)
+			closeRootLocks(locks)
+			return nil, err
+		}
+		controllerConfig := reconcile.Config{
+			Targets: runtimeConfig.Targets, DryRun: cfg.Agent.DryRun, MaxConcurrent: cfg.Agent.MaxConcurrent,
+		}
+		controller := reconcile.NewForSource(
+			source, deploy.New(), hook.New(), controllerConfig, logger,
+			semaphore, runtimeConfig.Name,
+		)
+		runtimes = append(runtimes, &sourceRuntime{
+			name: runtimeConfig.Name, source: source, controller: controller,
+		})
+	}
+	return &Application{config: cfg.Agent, runtimes: runtimes, locks: locks, logger: logger}, nil
 }
 
 func (a *Application) Close() error {
-	sourceErr := a.source.Close()
-	var etcdCloseErr error
-	if sourceErr != nil && !errors.Is(sourceErr, context.Canceled) {
-		etcdCloseErr = sourceErr
+	sourceErrs := make([]error, 0, len(a.runtimes))
+	for _, runtime := range a.runtimes {
+		if err := runtime.source.Close(); err != nil && !errors.Is(err, context.Canceled) {
+			sourceErrs = append(sourceErrs, err)
+		}
 	}
 	var lockErrs []error
 	for _, lock := range a.locks {
@@ -59,7 +85,13 @@ func (a *Application) Close() error {
 			lockErrs = append(lockErrs, err)
 		}
 	}
-	return errors.Join(append([]error{etcdCloseErr}, lockErrs...)...)
+	return errors.Join(append(sourceErrs, lockErrs...)...)
+}
+
+func closeSources(runtimes []*sourceRuntime) {
+	for _, runtime := range runtimes {
+		_ = runtime.source.Close()
+	}
 }
 
 func closeRootLocks(locks []*deploy.RootLock) {
@@ -70,36 +102,53 @@ func closeRootLocks(locks []*deploy.RootLock) {
 
 func (a *Application) Run(ctx context.Context) error {
 	if a.config.Once {
-		snapshot, err := a.source.SnapshotActive(ctx)
-		if err != nil {
-			return err
+		results := make([]error, len(a.runtimes))
+		var wg sync.WaitGroup
+		for index, runtime := range a.runtimes {
+			wg.Go(func() {
+				snapshot, err := runtime.source.SnapshotActive(ctx)
+				if err == nil {
+					err = runtime.controller.ReconcileSnapshot(ctx, snapshot, true)
+				}
+				results[index] = err
+			})
 		}
-		return a.controller.ReconcileSnapshot(ctx, snapshot, true)
+		wg.Wait()
+		return errors.Join(results...)
 	}
-	return a.runWatch(ctx)
+
+	results := make([]error, len(a.runtimes))
+	var wg sync.WaitGroup
+	for index, runtime := range a.runtimes {
+		wg.Go(func() {
+			results[index] = a.runWatch(ctx, runtime)
+		})
+	}
+	wg.Wait()
+	return errors.Join(results...)
 }
 
-func (a *Application) runWatch(ctx context.Context) error {
+func (a *Application) runWatch(ctx context.Context, runtime *sourceRuntime) error {
 	var failures int
 	for ctx.Err() == nil {
-		snapshot, err := a.source.SnapshotActive(ctx)
+		snapshot, err := runtime.source.SnapshotActive(ctx)
 		if err != nil {
 			failures++
-			a.logger.ErrorContext(ctx, "read active snapshot failed", "error", err)
+			a.logger.ErrorContext(ctx, "read active snapshot failed", "source", a.sourceLabel(runtime), "error", err)
 			if !sleepContext(ctx, a.retryDelay(failures)) {
 				return nil
 			}
 			continue
 		}
-		if err := a.controller.ReconcileSnapshot(ctx, snapshot, true); err != nil {
-			a.logger.ErrorContext(ctx, "initial snapshot reconcile failed", "error", err)
+		if err := runtime.controller.ReconcileSnapshot(ctx, snapshot, true); err != nil {
+			a.logger.ErrorContext(ctx, "initial snapshot reconcile failed", "source", a.sourceLabel(runtime), "error", err)
 		}
 		failures = 0
-		session := a.source.WatchActive(ctx, snapshot.Revision)
+		session := runtime.source.WatchActive(ctx, snapshot.Revision)
 		progressTicker := time.NewTicker(a.config.Watch.ProgressInterval)
 		livenessTimer := time.NewTimer(a.config.Watch.ProgressTimeout)
-		hookNext, hookExists := a.controller.NextHookRetry()
-		validityNext, validityExists := a.controller.NextValidityCheck()
+		hookNext, hookExists := runtime.controller.NextHookRetry()
+		validityNext, validityExists := runtime.controller.NextValidityCheck()
 		hookTimer, hookDeadline := deadlineTimer(hookNext, hookExists)
 		validityTimer, validityDeadline := deadlineTimer(validityNext, validityExists)
 		restart := false
@@ -117,7 +166,7 @@ func (a *Application) runWatch(ctx context.Context) error {
 					select {
 					case err := <-session.Errors():
 						if err != nil {
-							a.logger.WarnContext(ctx, "etcd watch ended", "error", err)
+							a.logger.WarnContext(ctx, "etcd watch ended", "source", a.sourceLabel(runtime), "error", err)
 						}
 					default:
 					}
@@ -133,44 +182,44 @@ func (a *Application) runWatch(ctx context.Context) error {
 						resetTimer(livenessTimer, time.Now().Add(a.config.Watch.ProgressTimeout))
 						continue
 					}
-					if a.controller.HasTarget(event.TargetID) {
+					if runtime.controller.HasTarget(event.TargetID) {
 						var err error
 						if event.Deleted {
-							err = a.controller.HandleDelete(ctx, event.TargetID)
+							err = runtime.controller.HandleDelete(ctx, event.TargetID)
 						} else {
-							err = a.controller.Reconcile(ctx, event.TargetID, event.Generation, event.Revision)
+							err = runtime.controller.Reconcile(ctx, event.TargetID, event.Generation, event.Revision)
 						}
 						if err != nil {
 							a.logger.ErrorContext(
 								ctx, "reconcile watch event failed",
-								"target", event.TargetID, "error", err,
+								"source", a.sourceLabel(runtime), "target", event.TargetID, "error", err,
 							)
 						}
 					}
 					resetTimer(livenessTimer, time.Now().Add(a.config.Watch.ProgressTimeout))
-					hookNext, _ := a.controller.NextHookRetry()
-					validityNext, _ := a.controller.NextValidityCheck()
+					hookNext, _ := runtime.controller.NextHookRetry()
+					validityNext, _ := runtime.controller.NextValidityCheck()
 					resetDeadlineTimer(&hookTimer, &hookDeadline, hookNext)
 					resetDeadlineTimer(&validityTimer, &validityDeadline, validityNext)
 				}
 			case err, ok := <-session.Errors():
 				if ok && err != nil {
-					a.logger.WarnContext(ctx, "etcd watch failed", "error", err)
+					a.logger.WarnContext(ctx, "etcd watch failed", "source", a.sourceLabel(runtime), "error", err)
 				}
 				restart = true
 			case now := <-progressTicker.C:
 				if err := session.RequestProgress(ctx); err != nil {
-					a.logger.WarnContext(ctx, "request etcd watch progress failed", "now", now, "error", err)
+					a.logger.WarnContext(ctx, "request etcd watch progress failed", "source", a.sourceLabel(runtime), "now", now, "error", err)
 				}
 			case <-livenessTimer.C:
-				a.logger.ErrorContext(ctx, "etcd watch liveness timeout")
+				a.logger.ErrorContext(ctx, "etcd watch liveness timeout", "source", a.sourceLabel(runtime))
 				restart = true
 			case now := <-hookDeadline:
-				next := a.controller.RetryDueHooks(ctx, now)
+				next := runtime.controller.RetryDueHooks(ctx, now)
 				resetDeadlineTimer(&hookTimer, &hookDeadline, next)
 			case now := <-validityDeadline:
-				a.controller.CheckValidity(ctx, now)
-				nextValidity, _ := a.controller.NextValidityCheck()
+				runtime.controller.CheckValidity(ctx, now)
+				nextValidity, _ := runtime.controller.NextValidityCheck()
 				resetDeadlineTimer(&validityTimer, &validityDeadline, nextValidity)
 			}
 		}
@@ -184,6 +233,13 @@ func (a *Application) runWatch(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (a *Application) sourceLabel(runtime *sourceRuntime) string {
+	if runtime.name == "" {
+		return "default"
+	}
+	return runtime.name
 }
 
 func deadlineTimer(deadline time.Time, exists bool) (*time.Timer, <-chan time.Time) {

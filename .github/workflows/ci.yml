@@ -74,6 +74,7 @@ jobs:
           PEMCAST_BINARY: ${{ github.workspace }}/.local/pemcast-integration
         run: |
           bash scripts/integration-etcd.sh
+          bash scripts/integration-etcd-multi-source.sh
           bash scripts/integration-etcd-seed.sh
           bash scripts/integration-etcd-upgrade.sh
           bash scripts/integration-etcd-prune.sh

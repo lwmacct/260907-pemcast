@@ -10,12 +10,11 @@ pemcast --config /etc/pemcast/config.yaml config validate
 生效值的加载顺序是 defaults, 第一个默认文件, explicit config, `PEMCAST_*` 环境变量, 最后是 CLI flag. 环境变量 key 使用完整 schema path, 并把 `.` 和 `-` 替换为 `_`:
 
 ```text
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd-1:2379"]'
-PEMCAST_AGENT_ETCD_PREFIX=/pemcast
+PEMCAST_AGENT_ETCDS='[{"name":"default","endpoints":["https://etcd-1:2379"],"prefix":"/pemcast"}]'
 PEMCAST_AGENT_ONCE=true
 PEMCAST_AGENT_WATCH_PROGRESS_INTERVAL=30s
 PEMCAST_AGENT_WATCH_PROGRESS_TIMEOUT=2m
-PEMCAST_AGENT_TARGETS='[{"id":"nginx",...}]'
+PEMCAST_AGENT_TARGETS='[{"id":"nginx","etcd":"default",...}]'
 ```
 
 scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
@@ -28,11 +27,11 @@ watch 模式没有周期 resync. agent 长驻 active-prefix watcher, 按 `progre
 
 - `tls-server`: 分发 leaf certificate, intermediate chain 和 private key, 用于 Nginx, Envoy, HAProxy, etcd server 或其他 HTTPS/gRPC 服务端身份.
 - `tls-client`: 分发同一个 identity 形态但按 clientAuth 用途校验, 用于 etcd client mTLS, 数据库 mTLS 或服务间 mTLS.
-- `trust`: 分发只含 CA certificates 的 `ca-bundle.pem`, 用于应用信任内部 CA; 它没有私钥, 也不能替代 `agent.etcd.tls.ca-file` 解决 pemcast 自身连接 etcd 的 bootstrap 信任.
+- `trust`: 分发只含 CA certificates 的 `ca-bundle.pem`, 用于应用信任内部 CA; 它没有私钥, 也不能替代 `agent.etcds[].tls.ca-file` 解决 pemcast 自身连接 etcd 的 bootstrap 信任.
 
 ## etcd prefix, 租户和 RBAC 授权
 
-etcd namespace prefix 默认是 `/pemcast`, agent 可以通过 `agent.etcd.prefix` 或 `PEMCAST_AGENT_ETCD_PREFIX` 修改, pack CLI 使用 `--etcd-prefix`. 程序只硬编码 `/v6/active|bundles` 子协议. 以 target `nginx` 为例:
+etcd namespace prefix 默认是 `/pemcast`, 每个 `agent.etcds[]` entry 通过自己的 `prefix` 配置, pack CLI 使用 `--etcd-prefix`. 程序只硬编码 `/v6/active|bundles` 子协议. 以 target `nginx` 为例:
 
 ```text
 /pemcast/v6/active/nginx
@@ -46,7 +45,7 @@ etcd namespace prefix 默认是 `/pemcast`, agent 可以通过 `agent.etcd.prefi
 /pemcast/tenants/demo/v6/active/nginx
 ```
 
-两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 pemcast agent 进程只配置一个 prefix, 跨租户消费时运行多个 agent 进程或逐租户执行命令. prefix 不参与 bundle digest, 也不改变 `/v6` 协议语义.
+两个路径中的 `nginx` 是彼此隔离的 target, 不会共享 active pointer 或 bundles. 建议每个租户使用独立的 agent/publisher users; 一个 agent 进程可以在 `agent.etcds[]` 中配置多个 prefix, 并让 target 通过 `etcd` 字段选择. prefix 不参与 bundle digest, 也不改变 `/v6` 协议语义.
 
 当前生产使用 broad prefix RBAC. `agent` role 对整个 namespace prefix 只读, `publish` role 对整个 namespace prefix 读写:
 
@@ -92,15 +91,21 @@ node agent 配置使用:
 
 ```yaml
 agent:
-  etcd:
-    endpoints:
-      - https://etcd.example:2379
-    prefix: /pemcast
+  etcds:
+    - name: default
+      endpoints:
+        - https://etcd.example:2379
+      prefix: /pemcast
+      user: agent-user:<password>
+      management-user: publisher-user:<password>
+  targets:
+    - id: nginx
+      etcd: default
 ```
 
-发布端复用 `agent.etcd` 配置. `pemcast tools pack` 使用 `--etcd-prefix`, `pemcast publish` 使用 `agent.etcd.prefix` 与同一组 etcd endpoint 和 TLS 配置. etcd 认证统一为 `username:password`; agent 依次读取 `ETCDCTL_USER_AGENT`, `ETCDCTL_USER`, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`, upgrade 依次读取 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
+发布端从 `agent.etcds[]` 选择连接; 未指定 `--etcd-name` 时优先选择 `name: default`, 否则选择数组第一个. `agent.etcds[].user` 是 agent 凭据, `management-user` 是管理命令凭据. `management-user` 为空时, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`, upgrade 依次读取 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
 
-使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcd.tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcd.tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
+使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcds[].tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcds[].tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
 
 pemcast 自身连接 etcd 使用的 CA 必须先存在于本地受管配置中; 不要试图通过 `trust` target 分发这份 bootstrap CA, 否则 agent 在获得新 CA 前已经无法连接旧 etcd 或新 etcd.
 
@@ -111,10 +116,8 @@ pemcast 自身连接 etcd 使用的 CA 必须先存在于本地受管配置中; 
 先 dry-run 并显式声明 type:
 
 ```bash
-PEMCAST_AGENT_ETCD_ENDPOINTS='["https://etcd.example:2379"]' \
-PEMCAST_AGENT_ETCD_PREFIX='/pemcast' \
-ETCDCTL_USER_UPGRADE='upgrade-admin:<password>' \
-pemcast upgrade \
+pemcast --config /etc/pemcast/config.yaml upgrade \
+  --etcd-name default \
   --default-type tls-server \
   --target-type etcd-client=tls-client \
   --dry-run
@@ -125,7 +128,8 @@ pemcast upgrade \
 默认保留 `/pemcast/v5/`. 只有全部 target postverify 通过且旧 v5 publisher 已停止或禁用后, 才执行:
 
 ```bash
-pemcast upgrade \
+pemcast --config /etc/pemcast/config.yaml upgrade \
+  --etcd-name default \
   --default-type tls-server \
   --target-type etcd-client=tls-client \
   --delete-old-v5 \
@@ -330,6 +334,7 @@ hook:
 hook 的 `path` 直接执行, 不额外经过 shell; 需要 shell 时显式把 `path` 配置为 `/bin/sh` 或 `/bin/bash` 并在 `args` 中传入 `-c` 与脚本. hook 进程接收:
 
 ```text
+PEMCAST_SOURCE
 PEMCAST_TARGET
 PEMCAST_GENERATION
 PEMCAST_PREVIOUS_GENERATION
@@ -340,7 +345,7 @@ PEMCAST_CHANGED_FILES
 PEMCAST_BUNDLE_SHA256
 ```
 
-stdin 中的 JSON 使用 `target-id`, `generation`, `previous-generation`, `etcd-revision`, `release-dir`, `current-dir`, `changed-files`, `bundle-sha256` 和 `activated-at` 字段. hook 在启用后运行, 必须幂等.
+stdin 中的 JSON 使用 `source`, `target-id`, `generation`, `previous-generation`, `etcd-revision`, `release-dir`, `current-dir`, `changed-files`, `bundle-sha256` 和 `activated-at` 字段. hook 在启用后运行, 必须幂等.
 
 hook 默认只获得固定 `PATH` 和 `PEMCAST_*` 事件变量. `hook.pass-environment` 是显式放行的现有环境变量名列表. hook 输出收集上限为 4096 bytes, timeout 会终止整个 process group.
 

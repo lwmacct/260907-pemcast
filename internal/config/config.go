@@ -31,7 +31,7 @@ type Agent struct {
 	Once          bool     `json:"once"           desc:"synchronize once and exit"`
 	DryRun        bool     `json:"dry-run"        desc:"validate changes without writing files or running hooks"`
 	MaxConcurrent int      `json:"max-concurrent" desc:"maximum targets reconciled concurrently"`
-	Etcd          Etcd     `json:"etcd"           desc:"etcd client configuration"`
+	Etcds         []Source `json:"etcds"           desc:"named etcd clusters for a single-process multi-tenant agent"`
 	Watch         Watch    `json:"watch"          desc:"etcd watch and retry configuration"`
 	Targets       []Target `json:"targets"        desc:"certificate synchronization targets"`
 }
@@ -56,6 +56,7 @@ type Pack struct {
 // Seed configures offline materialization of one validated v6 pack.
 type Seed struct {
 	TargetID string `json:"target"   desc:"target ID from the agent configuration"`
+	Etcd     string `json:"etcd"     desc:"agent.etcds name when multiple targets share an ID"`
 	PackDir  string `json:"pack-dir" desc:"directory containing bundle.json and metadata.json"`
 	Force    bool   `json:"force"    desc:"replace an existing different local release during an explicit rescue"`
 }
@@ -64,10 +65,39 @@ type Seed struct {
 type Etcd struct {
 	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v6"`
 	Endpoints      []string      `json:"endpoints"       desc:"etcd endpoint URLs"`
-	User           string        `json:"-"`
+	User           string        `json:"user"            desc:"etcd authentication as username:password; empty disables authentication"`
 	DialTimeout    time.Duration `json:"dial-timeout"    desc:"etcd connection timeout"`
 	RequestTimeout time.Duration `json:"request-timeout" desc:"timeout for an etcd read"`
 	TLS            EtcdTLS       `json:"tls"             desc:"etcd TLS client configuration"`
+}
+
+// ManagementConfig returns the same connection settings with the optional
+// management credential substituted for the agent credential.
+func (s Source) ManagementConfig() Etcd {
+	cfg := s.ClientConfig()
+	cfg.User = s.ManagementUser
+	return cfg
+}
+
+// Source names one etcd configuration so targets can select their remote
+// tenant without making the source name part of the remote protocol keys.
+type Source struct {
+	Name           string        `json:"name"            desc:"unique agent-local etcd name"`
+	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v6"`
+	Endpoints      []string      `json:"endpoints"       desc:"etcd endpoint URLs"`
+	User           string        `json:"user"            desc:"etcd authentication as username:password; empty disables authentication"`
+	DialTimeout    time.Duration `json:"dial-timeout"    desc:"etcd connection timeout"`
+	RequestTimeout time.Duration `json:"request-timeout" desc:"timeout for an etcd read"`
+	TLS            EtcdTLS       `json:"tls"             desc:"etcd TLS client configuration"`
+	ManagementUser string        `json:"management-user"  desc:"optional username:password for management commands; environment fallback is used when empty"`
+}
+
+// ClientConfig returns the command-agnostic etcd client fields.
+func (s Source) ClientConfig() Etcd {
+	return Etcd{
+		Prefix: s.Prefix, Endpoints: s.Endpoints, User: s.User,
+		DialTimeout: s.DialTimeout, RequestTimeout: s.RequestTimeout, TLS: s.TLS,
+	}
 }
 
 // EtcdTLS configures server verification and optional client authentication.
@@ -91,6 +121,7 @@ type Watch struct {
 // Target maps one immutable remote bundle to a local certificate directory.
 type Target struct {
 	ID           string     `json:"id"            desc:"target identifier and remote active-pointer name"`
+	Etcd         string     `json:"etcd"          desc:"agent.etcds name owning this target"`
 	Type         string     `json:"type"          desc:"certificate bundle type: tls-server, tls-client, or trust"`
 	DeletePolicy string     `json:"delete-policy" desc:"action when the active pointer is deleted: retain or fail"`
 	Output       Output     `json:"output"        desc:"local release directory configuration"`
@@ -135,12 +166,6 @@ func DefaultConfig() Config {
 	return Config{
 		Agent: Agent{
 			MaxConcurrent: 4,
-			Etcd: Etcd{
-				Prefix:         DefaultEtcdPrefix,
-				Endpoints:      []string{"http://127.0.0.1:2379"},
-				DialTimeout:    5 * time.Second,
-				RequestTimeout: 10 * time.Second,
-			},
 			Watch: Watch{
 				ProgressInterval: 30 * time.Second,
 				ProgressTimeout:  2 * time.Minute,
@@ -148,7 +173,6 @@ func DefaultConfig() Config {
 				RetryMax:         30 * time.Second,
 				JitterRatio:      0.2,
 			},
-			Targets: nil,
 		},
 		Tools: Tools{Pack: Pack{Type: bundle.TypeTLSServer, EtcdPrefix: DefaultEtcdPrefix}},
 	}
@@ -158,9 +182,19 @@ func DefaultConfig() Config {
 // copying the generated example into a deployment-specific configuration.
 func ExampleConfig() Config {
 	cfg := DefaultConfig()
+	cfg.Agent.Etcds = []Source{
+		{
+			Name:           "default",
+			Prefix:         DefaultEtcdPrefix,
+			Endpoints:      []string{"http://127.0.0.1:2379"},
+			DialTimeout:    5 * time.Second,
+			RequestTimeout: 10 * time.Second,
+		},
+	}
 	cfg.Agent.Targets = []Target{
 		{
 			ID:           "nginx",
+			Etcd:         "default",
 			Type:         bundle.TypeTLSServer,
 			DeletePolicy: "retain",
 			Output: Output{
@@ -187,36 +221,11 @@ func ExampleConfig() Config {
 
 // Validate checks cross-field constraints that cannot be expressed by cfgm's schema.
 func (c Config) Validate() error {
-	a := c.Agent
-	if err := a.ValidateCommon(); err != nil {
-		return err
-	}
-	return a.ValidateTargets()
+	return c.Agent.Validate()
 }
 
-// ValidateCommon checks settings shared by commands that use the agent's etcd
-// and protocol configuration, even when no local target is configured.
-func (a Agent) ValidateCommon() error {
-	if len(a.Etcd.Endpoints) == 0 {
-		return fmt.Errorf("agent.etcd.endpoints is required")
-	}
-	if _, err := keyspace.NewKeys(a.Etcd.Prefix); err != nil {
-		return err
-	}
-	for index, endpoint := range a.Etcd.Endpoints {
-		if strings.TrimSpace(endpoint) == "" {
-			return fmt.Errorf("agent.etcd.endpoints[%d] is empty", index)
-		}
-	}
-	if _, _, err := SplitEtcdUser(a.Etcd.User); err != nil {
-		return err
-	}
-	if a.Etcd.DialTimeout <= 0 || a.Etcd.RequestTimeout <= 0 {
-		return fmt.Errorf("agent.etcd dial-timeout and request-timeout must be positive")
-	}
-	if (a.Etcd.TLS.CertFile == "") != (a.Etcd.TLS.KeyFile == "") {
-		return fmt.Errorf("agent.etcd.tls cert-file and key-file must be configured together")
-	}
+// Validate checks the complete agent source and target graph.
+func (a Agent) Validate() error {
 	if a.Watch.ProgressInterval <= 0 || a.Watch.ProgressTimeout < 3*a.Watch.ProgressInterval {
 		return fmt.Errorf("agent.watch progress interval and timeout are invalid")
 	}
@@ -229,7 +238,109 @@ func (a Agent) ValidateCommon() error {
 	if a.MaxConcurrent <= 0 {
 		return fmt.Errorf("agent.max-concurrent must be positive")
 	}
+	sourceNames, err := a.validateEtcds()
+	if err != nil {
+		return err
+	}
+
+	if len(a.Targets) == 0 {
+		return fmt.Errorf("agent.targets is required")
+	}
+	seen := make(map[string]struct{}, len(a.Targets))
+	usedSources := make(map[string]struct{}, len(a.Etcds))
+	roots := make([]string, 0, len(a.Targets))
+	for index, target := range a.Targets {
+		if err := target.Validate(); err != nil {
+			return fmt.Errorf("agent.targets[%d]: %w", index, err)
+		}
+		if _, exists := sourceNames[target.Etcd]; !exists {
+			return fmt.Errorf("agent.targets[%d].etcd %q does not exist", index, target.Etcd)
+		}
+		targetKey := target.Etcd + "\x00" + target.ID
+		if _, exists := seen[targetKey]; exists {
+			return fmt.Errorf("agent etcd %q target %q is configured more than once", target.Etcd, target.ID)
+		}
+		seen[targetKey] = struct{}{}
+		usedSources[target.Etcd] = struct{}{}
+		roots = append(roots, target.Output.Root)
+	}
+	for _, source := range a.Etcds {
+		if _, used := usedSources[source.Name]; !used {
+			return fmt.Errorf("agent etcd %q has no targets", source.Name)
+		}
+	}
+	return validateOutputRoots(roots)
+}
+
+func validateEtcd(cfg Etcd, fieldPrefix string) error {
+	if len(cfg.Endpoints) == 0 {
+		return fmt.Errorf("%s.endpoints is required", fieldPrefix)
+	}
+	if _, err := keyspace.NewKeys(cfg.Prefix); err != nil {
+		return err
+	}
+	for index, endpoint := range cfg.Endpoints {
+		if strings.TrimSpace(endpoint) == "" {
+			return fmt.Errorf("%s.endpoints[%d] is empty", fieldPrefix, index)
+		}
+	}
+	if _, _, err := SplitEtcdUser(cfg.User); err != nil {
+		return err
+	}
+	if cfg.DialTimeout <= 0 || cfg.RequestTimeout <= 0 {
+		return fmt.Errorf("%s dial-timeout and request-timeout must be positive", fieldPrefix)
+	}
+	if (cfg.TLS.CertFile == "") != (cfg.TLS.KeyFile == "") {
+		return fmt.Errorf("%s.tls cert-file and key-file must be configured together", fieldPrefix)
+	}
 	return nil
+}
+
+func (a Agent) validateEtcds() (map[string]struct{}, error) {
+	if len(a.Etcds) == 0 {
+		return nil, fmt.Errorf("agent.etcds is required")
+	}
+	names := make(map[string]struct{}, len(a.Etcds))
+	for index, source := range a.Etcds {
+		if !safeBundleName(source.Name) {
+			return nil, fmt.Errorf("agent.etcds[%d].name must be a safe etcd name", index)
+		}
+		for prior := 0; prior < index; prior++ {
+			if a.Etcds[prior].Name == source.Name {
+				return nil, fmt.Errorf("agent etcd %q is configured more than once", source.Name)
+			}
+		}
+		if err := validateEtcd(source.ClientConfig(), fmt.Sprintf("agent.etcds[%d]", index)); err != nil {
+			return nil, fmt.Errorf("agent.etcds[%d]: %w", index, err)
+		}
+		if _, _, err := SplitEtcdUser(source.ManagementUser); err != nil {
+			return nil, fmt.Errorf("agent.etcds[%d].management-user: %w", index, err)
+		}
+		names[source.Name] = struct{}{}
+	}
+	return names, nil
+}
+
+// SelectEtcd returns one configured etcd. An empty name prefers the entry
+// named default and otherwise selects the first configured entry.
+func (a Agent) SelectEtcd(name string) (Source, error) {
+	if _, err := a.validateEtcds(); err != nil {
+		return Source{}, err
+	}
+	if name == "" {
+		for _, source := range a.Etcds {
+			if source.Name == "default" {
+				return source, nil
+			}
+		}
+		return a.Etcds[0], nil
+	}
+	for _, source := range a.Etcds {
+		if source.Name == name {
+			return source, nil
+		}
+	}
+	return Source{}, fmt.Errorf("agent etcd %q does not exist", name)
 }
 
 // SplitEtcdUser splits the etcdctl-style `username:password` value at the
@@ -245,27 +356,37 @@ func SplitEtcdUser(value string) (string, string, error) {
 	return username, password, nil
 }
 
-// ValidateTargets checks the deployment-specific local target set.
-func (a Agent) ValidateTargets() error {
-	if len(a.Targets) == 0 {
-		return fmt.Errorf("agent.targets is required")
+// SourceRuntime is one validated source and the targets that belong to it.
+type SourceRuntime struct {
+	Name    string
+	Etcd    Etcd
+	Targets []Target
+}
+
+// SourceRuntimes returns one runtime entry per configured etcd source.
+// Validate should run first; this method reports impossible structures only.
+func (a Agent) SourceRuntimes() ([]SourceRuntime, error) {
+	if len(a.Etcds) == 0 {
+		return nil, fmt.Errorf("agent.etcds is required")
 	}
-	seen := make(map[string]struct{}, len(a.Targets))
-	roots := make([]string, 0, len(a.Targets))
-	for i, target := range a.Targets {
-		if err := target.Validate(); err != nil {
-			return fmt.Errorf("agent.targets[%d]: %w", i, err)
-		}
-		if _, exists := seen[target.ID]; exists {
-			return fmt.Errorf("agent target %q is configured more than once", target.ID)
-		}
-		seen[target.ID] = struct{}{}
-		roots = append(roots, target.Output.Root)
+	runtimes := make([]SourceRuntime, 0, len(a.Etcds))
+	byName := make(map[string]int, len(a.Etcds))
+	for _, source := range a.Etcds {
+		byName[source.Name] = len(runtimes)
+		runtimes = append(runtimes, SourceRuntime{
+			Name: source.Name, Etcd: source.ClientConfig(),
+		})
 	}
-	if err := validateOutputRoots(roots); err != nil {
-		return err
+	for _, target := range a.Targets {
+		index := byName[target.Etcd]
+		runtimes[index].Targets = append(runtimes[index].Targets, target)
 	}
-	return nil
+	return runtimes, nil
+}
+
+// AllTargets returns every configured target.
+func (a Agent) AllTargets() []Target {
+	return append([]Target(nil), a.Targets...)
 }
 
 func validateOutputRoots(roots []string) error {
@@ -287,12 +408,7 @@ func validateOutputRoots(roots []string) error {
 var Manager = cfgm.MustNew(
 	DefaultConfig(),
 	cfgm.AppName(AppName),
-	cfgm.CLIAlias("agent.etcd.endpoints", "E"),
-	cfgm.CLIAlias("agent.etcd.prefix", "etcd-prefix"),
 )
-
-// AgentEtcdUserTemplate is expanded by a dedicated cfgm manager.
-const AgentEtcdUserTemplate = `${ETCDCTL_USER_AGENT:-${ETCDCTL_USER:-}}`
 
 // PublishEtcdUserTemplate is the publish-specific credential fallback.
 const PublishEtcdUserTemplate = `${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}`
@@ -323,35 +439,24 @@ func LoadCommand(ctx context.Context, root *cli.Command) (*Config, error) {
 	return Manager.Load(ctx, sources...)
 }
 
-// LoadEtcdCommand loads configuration and resolves command-specific etcd
-// credentials with cfgm template expansion.
-func LoadEtcdCommand(ctx context.Context, root *cli.Command, etcdUserTemplate string) (*Config, error) {
+// ResolveEtcdCommand loads configuration, selects one agent etcd, and resolves
+// its command-specific management credential only when no file credential is set.
+func ResolveEtcdCommand(
+	ctx context.Context, root *cli.Command, name, etcdUserTemplate string,
+) (Etcd, error) {
 	cfg, err := LoadCommand(ctx, root)
 	if err != nil {
-		return nil, err
+		return Etcd{}, err
 	}
-	cfg.Agent.Etcd.User, err = ExpandEtcdUser(ctx, etcdUserTemplate)
-	return cfg, err
-}
-
-// ActionWithEtcdUserTemplate wraps Manager.Action while retaining its defaults,
-// files, environment, and CLI source behavior. Credentials are expanded from a
-// separate command-specific cfgm template and are authoritative.
-func ActionWithEtcdUserTemplate(
-	run func(context.Context, *cli.Command, *Config) error,
-	etcdUserTemplate string,
-) func(context.Context, *cli.Command) error {
-	action := Manager.Action(func(ctx context.Context, command *cli.Command, cfg *Config) error {
-		user, err := ExpandEtcdUser(ctx, etcdUserTemplate)
-		if err != nil {
-			return fmt.Errorf("expand etcd user template: %w", err)
-		}
-		cfg.Agent.Etcd.User = user
-		return run(ctx, command, cfg)
-	})
-	return func(ctx context.Context, command *cli.Command) error {
-		return action(ctx, command)
+	source, err := cfg.Agent.SelectEtcd(name)
+	if err != nil {
+		return Etcd{}, err
 	}
+	etcd := source.ManagementConfig()
+	if etcd.User == "" {
+		etcd.User, err = ExpandEtcdUser(ctx, etcdUserTemplate)
+	}
+	return etcd, err
 }
 
 type etcdUserConfig struct {
