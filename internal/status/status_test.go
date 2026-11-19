@@ -23,13 +23,10 @@ func statusConfig(t *testing.T) (config.Config, string) {
 		ID:   "nginx",
 		Etcd: "default",
 		Type: bundle.TypeTLSServer,
-		Output: config.Output{
-			Root: outputRoot, CurrentLink: "current", DirectoryMode: config.FileMode("0700"),
-			Mappings: []config.FileMapping{
-				{Remote: bundle.NameCertificateChain, Local: "fullchain.pem", Mode: config.FileMode("0644")},
-				{Remote: bundle.NamePrivateKey, Local: "privkey.pem", Mode: config.FileMode("0600")},
-			},
-		},
+		Output: config.Output{Root: outputRoot, Files: map[string]config.OutputFile{
+			"certificate-chain": {Name: bundle.NameCertificateChain, Mode: config.FileMode("0644")},
+			"private-key":       {Name: bundle.NamePrivateKey, Mode: config.FileMode("0600")},
+		}},
 	}}
 	cfg.Agent.Etcds = []config.Source{{
 		Name: "default", Prefix: "/pemcast", Endpoints: []string{"http://127.0.0.1:1"},
@@ -68,8 +65,7 @@ func TestBuildReportsActiveTarget(t *testing.T) {
 
 	data, err := json.Marshal(report)
 	require.NoError(t, err)
-	require.NotContains(t, string(data), "private-key")
-	require.NotContains(t, string(data), "certificate")
+	require.NotContains(t, string(data), `"data"`)
 }
 
 func TestBuildReportsInvalidCurrent(t *testing.T) {

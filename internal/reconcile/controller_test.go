@@ -197,14 +197,10 @@ func testTarget(id string) config.Target {
 		ID:           id,
 		Type:         bundle.TypeTLSServer,
 		DeletePolicy: "retain",
-		Output: config.Output{
-			Root:        "/tmp/pemcast/" + id,
-			CurrentLink: "current",
-			Mappings: []config.FileMapping{
-				{Remote: bundle.NameCertificateChain, Local: "fullchain.pem"},
-				{Remote: bundle.NamePrivateKey, Local: "privkey.pem"},
-			},
-		},
+		Output: config.Output{Root: "/tmp/pemcast/" + id, Files: map[string]config.OutputFile{
+			"certificate-chain": {Name: bundle.NameCertificateChain, Mode: config.FileMode("0644")},
+			"private-key":       {Name: bundle.NamePrivateKey, Mode: config.FileMode("0600")},
+		}},
 	}
 }
 
@@ -280,7 +276,7 @@ func TestReconcileChangedDigestRunsHookAndSavesState(t *testing.T) {
 	if event.TargetID != "nginx" || event.Generation != "generation-1" || event.PreviousGeneration != "" {
 		t.Fatalf("unexpected hook event: %#v", event)
 	}
-	if event.ChangedFiles[0] != "fullchain.pem" || event.ChangedFiles[1] != "privkey.pem" {
+	if event.ChangedFiles[0] != "privkey.pem" || event.ChangedFiles[1] != "fullchain.pem" {
 		t.Fatalf("unexpected changed files: %#v", event.ChangedFiles)
 	}
 

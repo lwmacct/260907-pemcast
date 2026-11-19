@@ -136,16 +136,6 @@ func writeConfiguration(t *testing.T, root string) string {
       delete-policy: retain
       output:
         root: %s
-        current-link: current
-        retain-releases: 3
-        directory-mode: "0700"
-        mappings:
-          - remote: fullchain.pem
-            local: fullchain.pem
-            mode: "0644"
-          - remote: privkey.pem
-            local: privkey.pem
-            mode: "0600"
       validation:
         reject-expired: true
         minimum-validity: 1h
@@ -177,30 +167,12 @@ func writeMultiSourceConfiguration(t *testing.T, bendianRoot, lwmacctRoot string
       delete-policy: retain
       output:
         root: %s
-        current-link: current
-        directory-mode: "0700"
-        mappings:
-          - remote: fullchain.pem
-            local: fullchain.pem
-            mode: "0644"
-          - remote: privkey.pem
-            local: privkey.pem
-            mode: "0600"
     - id: shared
       etcd: lwmacct
       type: tls-server
       delete-policy: retain
       output:
         root: %s
-        current-link: current
-        directory-mode: "0700"
-        mappings:
-          - remote: fullchain.pem
-            local: fullchain.pem
-            mode: "0644"
-          - remote: privkey.pem
-            local: privkey.pem
-            mode: "0600"
 `, bendianRoot, lwmacctRoot)
 	require.NoError(t, os.WriteFile(configurationPath, []byte(configuration), 0o600))
 	return configurationPath
@@ -209,13 +181,10 @@ func writeMultiSourceConfiguration(t *testing.T, bendianRoot, lwmacctRoot string
 func configuredTarget(root string) appconfig.Target {
 	return appconfig.Target{
 		ID: "nginx", Type: bundle.TypeTLSServer, DeletePolicy: "retain",
-		Output: appconfig.Output{
-			Root: root, CurrentLink: "current", DirectoryMode: appconfig.FileMode("0700"),
-			Mappings: []appconfig.FileMapping{
-				{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: appconfig.FileMode("0644")},
-				{Remote: "privkey.pem", Local: "privkey.pem", Mode: appconfig.FileMode("0600")},
-			},
-		},
+		Output: appconfig.Output{Root: root, Files: map[string]appconfig.OutputFile{
+			"certificate-chain": {Name: "fullchain.pem", Mode: appconfig.FileMode("0644")},
+			"private-key":       {Name: "privkey.pem", Mode: appconfig.FileMode("0600")},
+		}},
 		Validation: appconfig.Validation{
 			RejectExpired: true,
 		},

@@ -19,7 +19,23 @@ PEMCAST_AGENT_TARGETS='[{"id":"nginx","etcd":"default",...}]'
 
 scalar 和 duration 是字符串. struct, slice 和 map 是 JSON 文档.
 
-配置 etcd 访问, 每个消费者一个 target type, output root, 安全 mappings, validation policy 和 hook. agent 用户需要对授权 prefix 只读, 对 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
+配置 etcd 访问, 每个消费者一个 target type, output root, 可选 role output 覆盖, validation policy 和 hook. agent 用户需要对授权 prefix 只读, 对 output path 有持久写权限. 配置会拒绝重复或祖先/后代重叠的 output root. 非 dry-run agent 会在每个 root 下创建 `.pemcast/agent.lock` 并持有到进程退出, 第二个进程会立即失败.
+
+`output.files` 按 role 覆盖 public 文件名和 mode, 可以整体省略:
+
+```yaml
+output:
+  root: /var/lib/pemcast/nginx
+  files:
+    certificate-chain:
+      name: tls.crt
+      mode: "0644"
+    private-key:
+      name: tls.key
+      mode: "0600"
+```
+
+默认 identity 输出是 `fullchain.pem` mode `0644` 与 `privkey.pem` mode `0600`; trust 输出是 `ca-bundle.pem` mode `0644`. name 只能是根级安全文件名, 不能是 `current` 或 `.pemcast`, 不同 role 也不能重名.
 
 watch 模式没有周期 resync. agent 长驻 active-prefix watcher, 按 `progress-interval` 请求 progress response; 超过 `progress-timeout` 没有 event 或 progress 时才重建 snapshot/watch. 不要为了消除 auth token warning 调整 etcd `auth-token-ttl`.
 
@@ -148,7 +164,7 @@ pemcast --config /etc/pemcast/config.yaml agent
 
 使用失败自动重启的 supervisor, 并用 `SIGTERM` 或 `SIGINT` 停止. output path 应持久化, agent 不再维护独立 state directory.
 
-非 dry-run agent 会自动创建每个 target 的 output root 与 `.pemcast`, 使用该 target 的 `output.directory-mode`. 部署脚本不需要预创建这些路径. `--once --dry-run` 保持无本地写入, 不会创建 output path.
+非 dry-run agent 会自动创建每个 target 的 output root 与 `.pemcast`, 目录 mode 固定为 `0700`. 部署脚本不需要预创建这些路径. `--once --dry-run` 保持无本地写入, 不会创建 output path.
 
 ### 自引用服务首装
 
@@ -166,7 +182,7 @@ seed 不访问 etcd, 不写 agent state, 不改变 active pointer. 它只物化�
 
 ## 部署分层
 
-通用 pemcast 部署脚本只负责运行工具容器, 挂载配置, 持久化 agent 数据和提供 hook 所需的控制通道. target id, output root, mapping 和 reload 策略全部由配置文件决定; 不要在通用部署脚本中引用具体 target 或预检某个 target 的证书文件.
+通用 pemcast 部署脚本只负责运行工具容器, 挂载配置, 持久化 agent 数据和提供 hook 所需的控制通道. target id, output root, role 输出和 reload 策略全部由配置文件决定; 不要在通用部署脚本中引用具体 target 或预检某个 target 的证书文件.
 
 消费者部署脚本只表达自己的挂载语义, 例如把 pemcast output namespace 挂载到 `/etc/<consumer>/tls`; 具体使用哪个 target 由消费者配置决定. 首次部署时先启动或同步 agent, 再启动必须立即读取证书的消费者, 或在 agent 完成同步后 reload/restart 消费者. 自引用的 etcd 例外: 先用真实证书 pack 执行 seed, 再让 etcd 与 agent 同时启动.
 
@@ -179,6 +195,8 @@ seed 不访问 etcd, 不写 agent state, 不改变 active pointer. 它只物化�
 ```text
 /var/lib/pemcast/nginx/
 ├── current -> .pemcast/releases/sha256-...
+├── fullchain.pem -> current/fullchain.pem
+├── privkey.pem -> current/privkey.pem
 └── .pemcast/
 ```
 
@@ -195,7 +213,11 @@ docker run --rm \
 ```text
 /etc/nginx/tls/current/fullchain.pem
 /etc/nginx/tls/current/privkey.pem
+/etc/nginx/tls/fullchain.pem
+/etc/nginx/tls/privkey.pem
 ```
+
+fsnotify 型消费者优先读取根级 role alias. generation 变化时 pemcast 会强制替换这些 alias 以产生 Create 事件; generation 未变化时只修复缺失或错误 alias.
 
 挂载规则:
 

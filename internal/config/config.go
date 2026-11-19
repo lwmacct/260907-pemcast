@@ -25,6 +25,15 @@ const (
 	DefaultEtcdRequestTimeout = 10 * time.Second
 )
 
+// Fixed local deployment values are intentionally not target configuration.
+// Consumers mount the output root; `current` and role aliases are public
+// implementation details of every managed root.
+const (
+	DefaultCurrentLink    = "current"
+	DefaultDirectoryMode  = FileMode("0700")
+	DefaultRetainReleases = 3
+)
+
 // Config is grouped by CLI subcommand so cfgm can trim command prefixes.
 type Config struct {
 	Agent Agent `json:"agent" desc:"pemcast agent configuration"`
@@ -144,18 +153,44 @@ type Target struct {
 
 // Output configures release-directory deployment.
 type Output struct {
-	Root           string        `json:"root"            desc:"local certificate root directory"`
-	CurrentLink    string        `json:"current-link"    desc:"relative symlink selecting the active release"`
-	RetainReleases int           `json:"retain-releases" desc:"number of inactive releases retained locally"`
-	DirectoryMode  FileMode      `json:"directory-mode"  desc:"octal mode for managed directories"`
-	Mappings       []FileMapping `json:"mappings"        desc:"remote bundle file to local file mappings"`
+	Root  string                `json:"root"           desc:"local certificate root directory"`
+	Files map[string]OutputFile `json:"files"                desc:"role-to-public-file overrides"`
 }
 
-// FileMapping configures one file written from a remote bundle.
-type FileMapping struct {
-	Remote string   `json:"remote" desc:"file name in the remote bundle"`
-	Local  string   `json:"local"  desc:"relative path inside each local release"`
-	Mode   FileMode `json:"mode"   desc:"octal file mode"`
+// OutputFile configures the public name and mode for one bundle role.
+type OutputFile struct {
+	Name string   `json:"name" desc:"public file name in the output root"`
+	Mode FileMode `json:"mode" desc:"octal file mode"`
+}
+
+// OrderedOutputFile is the canonical runtime view of one configured role.
+type OrderedOutputFile struct {
+	Role   string
+	Remote string
+	Name   string
+	Mode   FileMode
+}
+
+// OrderedFiles returns output files in notification-safe order: private key
+// first, then certificate chain. Trust bundles have a single role.
+func (o Output) OrderedFiles() []OrderedOutputFile {
+	order := []struct {
+		role   string
+		remote string
+	}{
+		{role: "private-key", remote: bundle.NamePrivateKey},
+		{role: "certificate-chain", remote: bundle.NameCertificateChain},
+		{role: "ca-bundle", remote: bundle.NameCABundle},
+	}
+	files := make([]OrderedOutputFile, 0, len(o.Files))
+	for _, item := range order {
+		if file, exists := o.Files[item.role]; exists {
+			files = append(files, OrderedOutputFile{
+				Role: item.role, Remote: item.remote, Name: file.Name, Mode: file.Mode,
+			})
+		}
+	}
+	return files
 }
 
 // Validation describes target-local certificate policy.
@@ -211,13 +246,9 @@ func ExampleConfig() Config {
 			Type:         bundle.TypeTLSServer,
 			DeletePolicy: "retain",
 			Output: Output{
-				Root:           "/etc/nginx/tls",
-				CurrentLink:    "current",
-				RetainReleases: 3,
-				DirectoryMode:  FileMode("0700"),
-				Mappings: []FileMapping{
-					{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: FileMode("0644")},
-					{Remote: "privkey.pem", Local: "privkey.pem", Mode: FileMode("0600")},
+				Root: "/etc/nginx/tls",
+				Files: map[string]OutputFile{
+					"certificate-chain": {Name: "tls.crt", Mode: FileMode("0644")},
 				},
 			},
 			Validation: Validation{
@@ -234,7 +265,23 @@ func ExampleConfig() Config {
 
 // Validate checks cross-field constraints that cannot be expressed by cfgm's schema.
 func (c Config) Validate() error {
-	return c.Agent.Validate()
+	return c.Normalized().Agent.Validate()
+}
+
+// Normalized returns a copied config with target-specific output-file
+// defaults resolved. Unknown target types are left untouched for validation.
+func (c Config) Normalized() Config {
+	c.Agent.Targets = append([]Target(nil), c.Agent.Targets...)
+	for index, target := range c.Agent.Targets {
+		c.Agent.Targets[index] = target.Normalized()
+	}
+	return c
+}
+
+// Normalized resolves output-file defaults for one target.
+func (t Target) Normalized() Target {
+	t.Output.Files = normalizeOutputFiles(t.Type, t.Output.Files)
+	return t
 }
 
 // Validate checks the complete agent source and target graph.
@@ -423,6 +470,15 @@ var Manager = cfgm.MustNew(
 	cfgm.AppName(AppName),
 )
 
+// ManagerAction wraps cfgm's typed CLI action so every command receives the
+// same normalized target output roles as LoadCommand.
+func ManagerAction(run func(context.Context, *cli.Command, *Config) error) cli.ActionFunc {
+	return Manager.Action(func(ctx context.Context, command *cli.Command, cfg *Config) error {
+		normalized := cfg.Normalized()
+		return run(ctx, command, &normalized)
+	})
+}
+
 // PublishEtcdUserTemplate is the publish-specific credential fallback.
 const PublishEtcdUserTemplate = `${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}`
 
@@ -449,7 +505,12 @@ func LoadCommand(ctx context.Context, root *cli.Command) (*Config, error) {
 	if prefix != "" {
 		sources = append(sources, cfgm.Env(prefix))
 	}
-	return Manager.Load(ctx, sources...)
+	cfg, err := Manager.Load(ctx, sources...)
+	if err != nil {
+		return nil, err
+	}
+	normalized := cfg.Normalized()
+	return &normalized, nil
 }
 
 // ResolveEtcdCommand loads configuration, selects one agent etcd, and resolves

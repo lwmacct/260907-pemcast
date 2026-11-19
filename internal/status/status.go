@@ -14,12 +14,12 @@ type Report struct {
 }
 
 type TargetStatus struct {
-	ID          string        `json:"id"`
-	Etcd        string        `json:"etcd,omitempty"`
-	Type        string        `json:"type"`
-	OutputRoot  string        `json:"output-root"`
-	CurrentLink string        `json:"current-link"`
-	Current     CurrentStatus `json:"current"`
+	ID         string                       `json:"id"`
+	Etcd       string                       `json:"etcd,omitempty"`
+	Type       string                       `json:"type"`
+	OutputRoot string                       `json:"output-root"`
+	Files      map[string]config.OutputFile `json:"files"`
+	Current    CurrentStatus                `json:"current"`
 }
 
 type CurrentStatus struct {
@@ -36,12 +36,12 @@ func Build(cfg config.Config) Report {
 
 	for _, target := range cfg.Agent.Targets {
 		item := TargetStatus{
-			ID:          target.ID,
-			Etcd:        target.Etcd,
-			Type:        target.Type,
-			OutputRoot:  target.Output.Root,
-			CurrentLink: target.Output.CurrentLink,
-			Current:     CurrentStatus{Status: "unknown"},
+			ID:         target.ID,
+			Etcd:       target.Etcd,
+			Type:       target.Type,
+			OutputRoot: target.Output.Root,
+			Files:      target.Output.Files,
+			Current:    CurrentStatus{Status: "unknown"},
 		}
 		item.Current = inspectCurrent(deployer, target.Output)
 		report.Targets = append(report.Targets, item)
@@ -50,7 +50,7 @@ func Build(cfg config.Config) Report {
 }
 
 func inspectCurrent(deployer *deploy.Deployer, output config.Output) CurrentStatus {
-	linkPath := filepath.Join(output.Root, output.CurrentLink)
+	linkPath := filepath.Join(output.Root, config.DefaultCurrentLink)
 	info, err := os.Lstat(linkPath)
 	if err != nil {
 		if os.IsNotExist(err) {

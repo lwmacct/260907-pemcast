@@ -14,10 +14,7 @@ import (
 
 func testLockTarget(root string) config.Target {
 	return config.Target{
-		Output: config.Output{
-			Root:          root,
-			DirectoryMode: config.FileMode("0700"),
-		},
+		Output: config.Output{Root: root},
 	}
 }
 

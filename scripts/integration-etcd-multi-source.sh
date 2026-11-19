@@ -119,16 +119,6 @@ agent:
       delete-policy: retain
       output:
         root: ${_work_dir}/bendian
-        current-link: current
-        retain-releases: 2
-        directory-mode: "0700"
-        mappings:
-          - remote: fullchain.pem
-            local: fullchain.pem
-            mode: "0644"
-          - remote: privkey.pem
-            local: privkey.pem
-            mode: "0600"
       validation:
         reject-expired: true
         minimum-validity: 1h
@@ -141,16 +131,6 @@ agent:
       delete-policy: retain
       output:
         root: ${_work_dir}/lwmacct
-        current-link: current
-        retain-releases: 2
-        directory-mode: "0700"
-        mappings:
-          - remote: fullchain.pem
-            local: fullchain.pem
-            mode: "0644"
-          - remote: privkey.pem
-            local: privkey.pem
-            mode: "0600"
       validation:
         reject-expired: true
         minimum-validity: 1h

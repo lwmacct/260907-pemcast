@@ -46,18 +46,12 @@ agent:
       # local release directory configuration
       output:
         root: "/etc/nginx/tls" # local certificate root directory
-        current-link: "current" # relative symlink selecting the active release
-        retain-releases: 3 # number of inactive releases retained locally
-        directory-mode: "0700" # octal mode for managed directories
 
-        # remote bundle file to local file mappings
-        mappings:
-          - remote: "fullchain.pem" # file name in the remote bundle
-            local: "fullchain.pem" # relative path inside each local release
+        # role-to-public-file overrides
+        files:
+          certificate-chain:
+            name: "tls.crt" # public file name in the output root
             mode: "0644" # octal file mode
-          - remote: "privkey.pem" # file name in the remote bundle
-            local: "privkey.pem" # relative path inside each local release
-            mode: "0600" # octal file mode
 
       # TLS material validation configuration
       validation:

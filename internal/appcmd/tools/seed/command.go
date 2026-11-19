@@ -16,7 +16,7 @@ import (
 var Command = &cli.Command{
 	Name:  "seed",
 	Usage: "materialize a validated v6 pack locally without contacting etcd",
-	Action: config.Manager.Action(func(ctx context.Context, command *cli.Command, cfg *config.Config) error {
+	Action: config.ManagerAction(func(ctx context.Context, command *cli.Command, cfg *config.Config) error {
 		if err := cfg.Validate(); err != nil {
 			return err
 		}

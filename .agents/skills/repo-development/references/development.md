@@ -35,7 +35,7 @@ go test ./internal/config
 ## 修改地图
 
 - CLI/生命周期: 检查 `cmd/pemcast`, `internal/appcmd/agent`, `internal/appcmd/tools/pack`, `internal/appcmd/publish`, `internal/appcmd/upgrade`, `internal/appcmd/tools/seed` 和 `internal/appcmd/status`. 保持 signal cancellation, once/watch 行为和 output root 锁生命周期.
-- 配置: 修改 `internal/config/config.go` 与 `validation.go`, 并覆盖 path 安全, mode, duration, etcd name, target 引用, 同一 etcd 内 target 唯一性, output root 重叠, mapping 引用和 hook 环境变量名. `agent.etcds[].user` 是 agent 凭据; `management-user` 是可选管理命令凭据, 为空时使用环境 fallback. 校验 etcd name, target 引用, 同一 etcd 内 target 唯一性和全局 output root 重叠.
+- 配置: 修改 `internal/config/config.go` 与 `validation.go`, 并覆盖 path 安全, mode, duration, etcd name, target 引用, 同一 etcd 内 target 唯一性, output root 重叠, role output 和 hook 环境变量名. `agent.etcds[].user` 是 agent 凭据; `management-user` 是可选管理命令凭据, 为空时使用环境 fallback. 校验 etcd name, target 引用, 同一 etcd 内 target 唯一性和全局 output root 重叠.
 - 远端协议: 保持可配置 etcd prefix, 固定 `/v6/active/<target-id>` 与 `/v6/bundles/<target-id>/<generation>` layout, active-prefix snapshot/watch, exact-key bundle fetch, 1 MiB 单 key bundle 限制, 严格 JSON, type/role/encoding 校验, generation/digest 匹配, 以及从同一个 snapshot revision 起监听并丢弃不超过该 revision 的重复事件. 真实 etcd CI 已覆盖 active snapshot, staged publish, agent once, watch 更新和 auth token 过期后的空闲 watch.
 - bundle 校验: 保持 digest 逻辑独立于 etcd 和 deployment. 测试 manifest 拒绝, semantic digest 顺序和稳定性, base64 解码, 文件 hash, key mismatch, type/role mismatch, chain 顺序, EKU, CA-only trust, encoding mismatch, size limit 和 validity 边界.
 - reconcile: 覆盖 changed/unchanged digest, dry-run, pending hook retry, validity 边界, concurrency, snapshot 缺失 target 和两种 delete policy. 保持 consumer-side 接口便于 fake 注入.

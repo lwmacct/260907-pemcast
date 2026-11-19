@@ -228,9 +228,10 @@ func (c *Controller) hookEvent(
 	target config.Target, generation string, revision int64,
 	material *bundle.Material, result deploy.Result,
 ) hook.Event {
-	changed := make([]string, 0, len(target.Output.Mappings))
-	for _, mapping := range target.Output.Mappings {
-		changed = append(changed, mapping.Local)
+	files := target.Output.OrderedFiles()
+	changed := make([]string, 0, len(files))
+	for _, file := range files {
+		changed = append(changed, file.Name)
 	}
 	releaseDir := result.ReleaseDir
 	if releaseDir == "" {

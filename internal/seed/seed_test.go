@@ -64,8 +64,8 @@ func TestApplySeedsTrustBundle(t *testing.T) {
 	root := t.TempDir()
 	target := testTarget(root, 0)
 	target.Type = bundle.TypeTrust
-	target.Output.Mappings = []config.FileMapping{
-		{Remote: bundle.NameCABundle, Local: "ca-bundle.pem", Mode: config.FileMode("0644")},
+	target.Output.Files = map[string]config.OutputFile{
+		"ca-bundle": {Name: bundle.NameCABundle, Mode: config.FileMode("0644")},
 	}
 	result := buildTrustPack(t, target.ID)
 
@@ -96,13 +96,10 @@ func TestApplyRejectsTargetPrefixAndValidityMismatch(t *testing.T) {
 func testTarget(root string, minimumValidity time.Duration) config.Target {
 	return config.Target{
 		ID: "nginx", Type: bundle.TypeTLSServer, DeletePolicy: "retain",
-		Output: config.Output{
-			Root: root, CurrentLink: "current", RetainReleases: 3, DirectoryMode: config.FileMode("0700"),
-			Mappings: []config.FileMapping{
-				{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: config.FileMode("0644")},
-				{Remote: "privkey.pem", Local: "privkey.pem", Mode: config.FileMode("0600")},
-			},
-		},
+		Output: config.Output{Root: root, Files: map[string]config.OutputFile{
+			"certificate-chain": {Name: "fullchain.pem", Mode: config.FileMode("0644")},
+			"private-key":       {Name: "privkey.pem", Mode: config.FileMode("0600")},
+		}},
 		Validation: config.Validation{
 			RejectExpired: true, MinimumValidity: minimumValidity,
 		},

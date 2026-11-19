@@ -41,7 +41,7 @@ func LockRoots(targets []config.Target) ([]*RootLock, error) {
 
 	locks := make([]*RootLock, 0, len(ordered))
 	for _, target := range ordered {
-		lock, err := lockRoot(target.Output.Root, target.Output.DirectoryMode.Perm())
+		lock, err := lockRoot(target.Output.Root, config.DefaultDirectoryMode.Perm())
 		if err != nil {
 			closeRootLocks(locks)
 			return nil, fmt.Errorf("lock output root %q: %w", target.Output.Root, err)

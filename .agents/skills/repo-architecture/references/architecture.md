@@ -194,13 +194,18 @@ v5 generation 不会推导 v6 generation; upgrade 从原始材料重建 v6 seman
     └── sha256-active/
 ```
 
-release 先写入 staging directory, 按配置 mappings/modes 填充, 写入 `.pemcast-digest`, fsync, rename 到最终 immutable 目录, 再用临时 symlink 原子切换. 复用已有 release 时校验 digest marker, mapped file bytes, modes 和完整目录树. active release 永不 prune.
+release 先写入 staging directory, 内部固定使用协议 bundle 文件名和 role mode, 写入 `.pemcast-digest`, fsync, rename 到最终 immutable 目录, 再用临时 symlink 原子切换. 复用已有 release 时校验 digest marker, release file bytes, modes 和完整目录树. active release 永不 prune.
 
 远端 generation 和本地 release 都由 digest 推导, 因此相同内容不会产生重复 release.
 
-#### Stable file links
+#### Public role aliases
 
-每次激活后, deployer 为 output root 下每个根级 mapped file 维护一个文件级 symlink:
+`output.files` 按 bundle role 配置 public 文件名和 mode. 省略时由 target type 推导:
+
+- identity: `fullchain.pem` mode `0644`, `privkey.pem` mode `0600`.
+- trust: `ca-bundle.pem` mode `0644`.
+
+deployer 为 output root 下每个 role 维护一个文件级 symlink:
 
 ```text
 /etc/nginx/tls/
@@ -208,7 +213,11 @@ release 先写入 staging directory, 按配置 mappings/modes 填充, 写入 `.p
 └── privkey.pem -> current/privkey.pem
 ```
 
-目录级 symlink 切换在 inotify 中不产生 mapped file 的事件, fsnotify 型消费者 (sing-box, Traefik, Envoy file-based SDS) 无法通过 `current/...` 路径检测更新. 根级文件级 symlink 的原子替换在 output root (真实目录) 内产生 Create 事件, 使这些消费者直接热加载, 不再需要复制文件的 hook. 已存在且 target 正确的 link 不会被重复替换, 因此未变化的激活不产生多余事件. 子目录 mapping 和与 current-link 同名的 mapping 不生成根级 link.
+目录级 symlink 切换在 inotify 中不产生 role file 的事件, fsnotify 型消费者 (sing-box, Traefik, Envoy file-based SDS) 无法通过 `current/...` 路径检测更新. generation 变化时, 根级 role alias 会被强制 tmp+rename 替换, 即使 link 字符串仍是 `current/<bundle-file>`; 这会在 output root (真实目录) 内产生 Create 事件, 使这些消费者直接热加载, 不再需要复制文件的 hook. generation 未变化时, 已存在且 target 正确的 link 不会被重复替换, 因此不产生多余事件.
+
+public name 必须是安全文件名, 不能使用子目录, `current` 或 `.pemcast`. 这保证每个 role 都具备同样的根级通知能力; 需要子目录布局的消费者应挂载到自己的 output root, 或配置独立 target.
+
+配置改名后, 部署器只清理确认指向 `current/...` 或 `.pemcast/...` 的旧受管 alias. output root 中出现其他非受管文件时激活失败, 不做猜测性删除.
 
 消费者按自身重载机制选择路径:
 

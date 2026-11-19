@@ -25,9 +25,9 @@ flowchart LR
 - 并发安全: 首次发布比较 create revision, 更新比较 active value + ModRevision; 冲突失败而不是覆盖.
 - 校验发生在启用前: manifest 严格解析, 文件逐一校验 SHA-256; identity bundle 校验链顺序, EKU 和证书/私钥匹配, trust bundle 校验全部证书都是 CA, 并满足有效期策略.
 - 本地发布内容寻址: release 目录名来自 bundle digest, 相同内容不会重复写入; 复用前校验 marker, bytes, mode 和目录树.
-- 应用路径稳定: 应用读取 `current/...`, pemcast 通过临时 symlink 和 rename 原子切换目标.
+- 应用路径稳定: release 内部使用 bundle 文件名, `output.files` 为每个 role 维护根级 public alias; pemcast 通过临时 symlink 和 rename 原子切换.
 - output root 互斥: 非 dry-run agent 按排序获取每个 root 的 `.pemcast/agent.lock`, 并持有到进程退出.
-- 非 dry-run agent 自动创建 output root 与 `.pemcast`, 并使用配置的 `directory-mode`; dry-run 不创建任何本地目录.
+- 非 dry-run agent 自动创建 mode `0700` 的 output root 与 `.pemcast`; dry-run 不创建任何本地目录.
 - dry-run 无本地写入: 不创建 output root, 不读写本地状态, 不执行 deploy 或 hook.
 - 服务重载可重试: hook 在本地切换后执行, 失败保存在进程内 pending 状态, 由独立指数退避重试.
 - watch 是事件主通道: agent 长驻 active-prefix watcher, 周期发送 manual progress request, 只有 liveness timeout 或协议错误才重建 snapshot/watch.
@@ -42,7 +42,36 @@ pemcast config example > config/config.yaml
 pemcast --config config/config.yaml config validate
 ```
 
-至少配置一个 `agent.etcds[]` entry 和一个 target 的 `etcd`, `type`, `output.root`, mappings, validation policy 与 hook. 常用 type 是 `tls-server`, `tls-client` 和 `trust`.
+至少配置一个 `agent.etcds[]` entry 和一个 target 的 `etcd`, `type`, `output.root`, validation policy 与 hook. `output.files` 可以整体省略, 按 type 推导 role 的 public 文件名和 mode. 常用 type 是 `tls-server`, `tls-client` 和 `trust`.
+
+### Role-based output
+
+`target.type` 已经决定远端 bundle role, 因此本地输出按 role 覆盖, 不再配置 remote-to-local mappings:
+
+```yaml
+targets:
+  - id: nginx
+    etcd: default
+    type: tls-server
+    output:
+      root: /var/lib/pemcast/nginx
+      files:
+        certificate-chain:
+          name: tls.crt
+          mode: "0644"
+        private-key:
+          name: tls.key
+          mode: "0600"
+```
+
+省略 `files` 时:
+
+| type | 默认 public files |
+|---|---|
+| `tls-server` / `tls-client` | `fullchain.pem` mode `0644`, `privkey.pem` mode `0600` |
+| `trust` | `ca-bundle.pem` mode `0644` |
+
+`name` 必须是 output root 下的安全文件名, 不能使用子目录, `current` 或 `.pemcast`. 不同 role 的 name 不能重复. release 内部始终使用协议 bundle 文件名; 用户配置的 name 只影响 output root 下的稳定 symlink.
 
 每个 `agent.etcds[]` entry 直接平级配置 `name`, `prefix`, `endpoints`, authentication 和 TLS. pack CLI 通过 `--etcd-prefix` 配置. 程序只硬编码 `/v6` 子协议:
 
@@ -127,7 +156,7 @@ publish, upgrade 与 prune 不再维护独立 management 配置. 它们默认选
 
 ### 本地 seed
 
-`seed` 用于自引用消费者的首装和显式救援. 它读取一个完整 v6 pack, 按 agent 配置中的 target 校验 prefix, target, type, digest, 证书语义, mapping 和有效期, 然后在不访问 etcd 的情况下创建本地 content-addressed release 并原子切换 `current`:
+`seed` 用于自引用消费者的首装和显式救援. 它读取一个完整 v6 pack, 按 agent 配置中的 target 校验 prefix, target, type, digest, 证书语义, output role 和有效期, 然后在不访问 etcd 的情况下创建本地 content-addressed release 并原子切换 `current`:
 
 ```bash
 pemcast \
@@ -262,6 +291,8 @@ watch 模式长驻 etcd stream, 并按 `agent.watch.progress-interval` 请求 pr
 ```text
 /etc/nginx/tls/
 ├── current -> .pemcast/releases/sha256-...
+├── fullchain.pem -> current/fullchain.pem
+├── privkey.pem -> current/privkey.pem
 └── .pemcast/
     ├── agent.lock
     └── releases/
@@ -272,9 +303,13 @@ watch 模式长驻 etcd stream, 并按 `agent.watch.progress-interval` 请求 pr
 应用读取:
 
 ```text
+/etc/nginx/tls/fullchain.pem
+/etc/nginx/tls/privkey.pem
 /etc/nginx/tls/current/fullchain.pem
 /etc/nginx/tls/current/privkey.pem
 ```
+
+generation 变化时, pemcast 会替换每个根级 role alias, 即使 symlink 字符串不变; 这为 sing-box, Traefik 或 Envoy 等 fsnotify 消费者产生 Create 事件. generation 未变化时只修复缺失或错误的 alias, 不制造额外事件.
 
 ## 容器部署契约
 

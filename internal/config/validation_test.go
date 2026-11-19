@@ -13,8 +13,10 @@ import (
 func TestValidateTarget(t *testing.T) {
 	cfg := singleSourceConfig(validTarget("nginx", filepath.Join(t.TempDir(), "tls")))
 	require.NoError(t, cfg.Validate())
-	cfg.Agent.Targets[0].Output.Mappings[1].Local = "../key.pem"
-	require.ErrorContains(t, cfg.Validate(), "safe relative path")
+	file := cfg.Agent.Targets[0].Output.Files["private-key"]
+	file.Name = "../key.pem"
+	cfg.Agent.Targets[0].Output.Files["private-key"] = file
+	require.ErrorContains(t, cfg.Validate(), "safe file name")
 }
 
 func TestValidateRejectsUncleanRoot(t *testing.T) {
@@ -29,7 +31,7 @@ func TestValidateRejectsInvalidHookEnvironmentName(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "valid environment variable name")
 }
 
-func TestValidateTargetTypesAndRequiredMappings(t *testing.T) {
+func TestValidateTargetTypesAndOutputFiles(t *testing.T) {
 	target := validTarget("client", filepath.Join(t.TempDir(), "client"))
 	target.Type = bundle.TypeTLSClient
 	target.Validation.ServerNames = []string{"example.com"}
@@ -41,17 +43,63 @@ func TestValidateTargetTypesAndRequiredMappings(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 
 	target.Type = bundle.TypeTrust
-	target.Output.Mappings = []FileMapping{
-		{Remote: bundle.NameCABundle, Local: "ca-bundle.pem", Mode: FileMode("0644")},
+	target.Output.Files = map[string]OutputFile{
+		"ca-bundle": {Name: bundle.NameCABundle, Mode: FileMode("0644")},
 	}
 	cfg.Agent.Targets[0] = targetForSource("default", target)
 	require.NoError(t, cfg.Validate())
 
-	target.Output.Mappings = []FileMapping{
-		{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: FileMode("0644")},
+	target.Output.Files = map[string]OutputFile{
+		"fullchain.pem": {Name: bundle.NameCertificateChain, Mode: FileMode("0644")},
 	}
 	cfg.Agent.Targets[0] = targetForSource("default", target)
-	require.ErrorContains(t, cfg.Validate(), "missing remote mapping")
+	require.ErrorContains(t, cfg.Validate(), "requires exactly 1 output files")
+}
+
+func TestNormalizeOutputFilesAppliesRoleDefaults(t *testing.T) {
+	target := validTarget("nginx", filepath.Join(t.TempDir(), "tls"))
+	target.Output.Files = map[string]OutputFile{
+		"certificate-chain": {Name: "tls.crt"},
+	}
+
+	normalized := target.Normalized()
+	require.Equal(t, "tls.crt", normalized.Output.Files["certificate-chain"].Name)
+	require.Equal(t, FileMode("0644"), normalized.Output.Files["certificate-chain"].Mode)
+	require.Equal(t, bundle.NamePrivateKey, normalized.Output.Files["private-key"].Name)
+	require.Equal(t, FileMode("0600"), normalized.Output.Files["private-key"].Mode)
+
+	cfg := singleSourceConfig(target)
+	require.NoError(t, cfg.Validate())
+	require.Equal(t, []string{"privkey.pem", "tls.crt"}, publicFileNames(cfg.Normalized().Agent.Targets[0].Output))
+}
+
+func TestValidateRejectsUnsafeOrDuplicatedOutputFileNames(t *testing.T) {
+	target := validTarget("nginx", filepath.Join(t.TempDir(), "tls"))
+	file := target.Output.Files["private-key"]
+	file.Name = "tls.crt"
+	target.Output.Files["private-key"] = file
+	certificate := target.Output.Files["certificate-chain"]
+	certificate.Name = "tls.crt"
+	target.Output.Files["certificate-chain"] = certificate
+	cfg := singleSourceConfig(target)
+	require.ErrorContains(t, cfg.Validate(), "duplicated")
+
+	file.Name = "current"
+	cfg.Agent.Targets[0].Output.Files["private-key"] = file
+	require.ErrorContains(t, cfg.Validate(), "reserved")
+
+	file.Name = "nested/key.pem"
+	cfg.Agent.Targets[0].Output.Files["private-key"] = file
+	require.ErrorContains(t, cfg.Validate(), "safe file name")
+}
+
+func TestValidateRejectsInvalidOutputFileMode(t *testing.T) {
+	target := validTarget("nginx", filepath.Join(t.TempDir(), "tls"))
+	file := target.Output.Files["private-key"]
+	file.Mode = FileMode("9999")
+	target.Output.Files["private-key"] = file
+	cfg := singleSourceConfig(target)
+	require.ErrorContains(t, cfg.Validate(), "mode is invalid")
 }
 
 func TestValidateRejectsOverlappingOutputRootsAcrossSources(t *testing.T) {
@@ -209,14 +257,20 @@ func targetForSource(name string, target Target) Target {
 func validTarget(id, root string) Target {
 	return Target{
 		ID: id, DeletePolicy: "retain", Type: bundle.TypeTLSServer,
-		Output: Output{
-			Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: FileMode("0700"),
-			Mappings: []FileMapping{
-				{Remote: bundle.NameCertificateChain, Local: "fullchain.pem", Mode: FileMode("0644")},
-				{Remote: bundle.NamePrivateKey, Local: "privkey.pem", Mode: FileMode("0600")},
-			},
-		},
+		Output: Output{Root: root, Files: map[string]OutputFile{
+			"certificate-chain": {Name: bundle.NameCertificateChain, Mode: FileMode("0644")},
+			"private-key":       {Name: bundle.NamePrivateKey, Mode: FileMode("0600")},
+		}},
 	}
+}
+
+func publicFileNames(output Output) []string {
+	files := output.OrderedFiles()
+	names := make([]string, 0, len(files))
+	for _, file := range files {
+		names = append(names, file.Name)
+	}
+	return names
 }
 
 func validSourceEtcd(name, prefix, user string) Source {

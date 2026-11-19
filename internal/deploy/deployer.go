@@ -17,6 +17,7 @@ import (
 
 const managedDirectory = ".pemcast"
 const stableLinkTmpSuffix = ".pemcast-tmp"
+const currentLinkName = "current"
 
 // Result describes an active local release.
 type Result struct {
@@ -33,7 +34,7 @@ func New() *Deployer { return &Deployer{} }
 // CurrentDigest reads the content identity stored in the selected release and
 // rejects a current path that is not a safely scoped managed symlink.
 func (d *Deployer) CurrentDigest(output config.Output) (string, error) {
-	linkPath := filepath.Join(output.Root, output.CurrentLink)
+	linkPath := filepath.Join(output.Root, currentLinkName)
 	info, err := os.Lstat(linkPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
@@ -70,7 +71,7 @@ func (d *Deployer) CurrentDigest(output config.Output) (string, error) {
 	return digest, nil
 }
 
-// Activate writes a complete release and atomically replaces current-link.
+// Activate writes a complete release and atomically replaces the current link.
 func (d *Deployer) Activate(material *bundle.Material, output config.Output) (Result, error) {
 	if material == nil {
 		return Result{}, fmt.Errorf("bundle material is nil")
@@ -79,20 +80,20 @@ func (d *Deployer) Activate(material *bundle.Material, output config.Output) (Re
 	if err != nil {
 		return Result{}, fmt.Errorf("read active release digest: %w", err)
 	}
-	currentDir := filepath.Join(output.Root, output.CurrentLink)
+	currentDir := filepath.Join(output.Root, currentLinkName)
 	if currentDigest == material.Digest {
 		releaseDir := filepath.Join(output.Root, managedDirectory, "releases", "sha256-"+material.Digest)
 		if err := verifyRelease(releaseDir, material, output); err != nil {
 			return Result{}, fmt.Errorf("verify active release: %w", err)
 		}
-		if err := updateStableLinks(output); err != nil {
+		if err := updateStableLinks(output, false); err != nil {
 			return Result{}, fmt.Errorf("repair stable links: %w", err)
 		}
 		return Result{CurrentDir: currentDir}, nil
 	}
 	managedRoot := filepath.Join(output.Root, managedDirectory)
 	releasesRoot := filepath.Join(managedRoot, "releases")
-	if err := os.MkdirAll(releasesRoot, output.DirectoryMode.Perm()); err != nil {
+	if err := os.MkdirAll(releasesRoot, config.DefaultDirectoryMode.Perm()); err != nil {
 		return Result{}, fmt.Errorf("create releases directory: %w", err)
 	}
 	releaseName := "sha256-" + material.Digest
@@ -100,56 +101,44 @@ func (d *Deployer) Activate(material *bundle.Material, output config.Output) (Re
 	if err := d.ensureRelease(releaseDir, material, output); err != nil {
 		return Result{}, err
 	}
-	if err := switchSymlink(output.Root, output.CurrentLink, filepath.Join(managedDirectory, "releases", releaseName)); err != nil {
+	if err := switchSymlink(output.Root, currentLinkName, filepath.Join(managedDirectory, "releases", releaseName)); err != nil {
 		return Result{}, fmt.Errorf("activate release: %w", err)
 	}
-	if err := updateStableLinks(output); err != nil {
+	if err := updateStableLinks(output, true); err != nil {
 		return Result{}, fmt.Errorf("update stable links: %w", err)
 	}
-	if err := pruneReleases(releasesRoot, releaseName, output.RetainReleases); err != nil {
+	if err := pruneReleases(releasesRoot, releaseName, config.DefaultRetainReleases); err != nil {
 		return Result{}, fmt.Errorf("prune old releases: %w", err)
 	}
 	return Result{Changed: true, ReleaseDir: releaseDir, CurrentDir: currentDir}, nil
 }
 
-// updateStableLinks ensures each root-level mapped file has a symlink through
-// current. Links that are missing or point to the wrong target are atomically
-// replaced, which produces filesystem events for fsnotify-based consumers.
-// Correct existing links are left untouched, so unchanged activations produce
-// no extra events.
-func updateStableLinks(output config.Output) error {
-	type stableLink struct {
-		name   string
-		target string
+// updateStableLinks ensures each public role file has a root-level symlink
+// through current. A changed generation forces replacement even when the link
+// text is unchanged, producing Create events for fsnotify consumers. An
+// unchanged generation only repairs missing or incorrect links.
+func updateStableLinks(output config.Output, force bool) error {
+	expected := make(map[string]struct{}, len(output.Files))
+	for _, file := range output.OrderedFiles() {
+		expected[file.Name] = struct{}{}
 	}
-	var links []stableLink
-	for _, mapping := range output.Mappings {
-		local := filepath.FromSlash(mapping.Local)
-		if filepath.Dir(local) != "." {
-			continue
-		}
-		if local == output.CurrentLink {
-			continue
-		}
-		links = append(links, stableLink{
-			name:   local,
-			target: filepath.Join(output.CurrentLink, local),
-		})
+	if err := removeStaleManagedAliases(output.Root, expected); err != nil {
+		return err
 	}
-	if len(links) == 0 {
-		return nil
-	}
-	sort.SliceStable(links, func(i, j int) bool {
-		return isPrivateKeyFile(links[i].name) && !isPrivateKeyFile(links[j].name)
-	})
-	for _, link := range links {
-		linkPath := filepath.Join(output.Root, link.name)
-		if existing, err := os.Readlink(linkPath); err == nil && existing == link.target {
-			continue
+	for _, file := range output.OrderedFiles() {
+		linkPath := filepath.Join(output.Root, file.Name)
+		target := filepath.Join(currentLinkName, file.Remote)
+		if !force {
+			if existing, err := os.Readlink(linkPath); err == nil && existing == target {
+				continue
+			}
 		}
-		tmpPath := filepath.Join(output.Root, "."+link.name+stableLinkTmpSuffix)
+		if info, err := os.Lstat(linkPath); err == nil && info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("public file %q is not a symlink", file.Name)
+		}
+		tmpPath := filepath.Join(output.Root, "."+file.Name+stableLinkTmpSuffix)
 		_ = os.Remove(tmpPath)
-		if err := os.Symlink(link.target, tmpPath); err != nil {
+		if err := os.Symlink(target, tmpPath); err != nil {
 			return fmt.Errorf("create stable link staging %q: %w", tmpPath, err)
 		}
 		if err := os.Rename(tmpPath, linkPath); err != nil {
@@ -159,9 +148,55 @@ func updateStableLinks(output config.Output) error {
 	return syncDirectory(output.Root)
 }
 
-func isPrivateKeyFile(name string) bool {
-	base := strings.ToLower(filepath.Base(name))
-	return strings.Contains(base, "key") || strings.Contains(base, "priv")
+func removeStaleManagedAliases(root string, expected map[string]struct{}) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	removed := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == currentLinkName || name == managedDirectory {
+			continue
+		}
+		if _, exists := expected[name]; exists {
+			continue
+		}
+		path := filepath.Join(root, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("output root contains unexpected unmanaged entry %q", name)
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		if !isManagedAliasTarget(target) {
+			return fmt.Errorf("output root contains unexpected unmanaged entry %q", name)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove stale public alias %q: %w", name, err)
+		}
+		removed = true
+	}
+	if removed {
+		return syncDirectory(root)
+	}
+	return nil
+}
+
+func isManagedAliasTarget(target string) bool {
+	if target == "" || filepath.IsAbs(target) || filepath.Clean(target) != target {
+		return false
+	}
+	first, _, found := strings.Cut(target, string(filepath.Separator))
+	return found && (first == currentLinkName || first == managedDirectory)
 }
 
 func (d *Deployer) ensureRelease(releaseDir string, material *bundle.Material, output config.Output) error {
@@ -175,20 +210,20 @@ func (d *Deployer) ensureRelease(releaseDir string, material *bundle.Material, o
 		return fmt.Errorf("create release staging directory: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(temporary) }()
-	if err := os.Chmod(temporary, output.DirectoryMode.Perm()); err != nil {
+	if err := os.Chmod(temporary, config.DefaultDirectoryMode.Perm()); err != nil {
 		return err
 	}
-	for _, mapping := range output.Mappings {
-		content, ok := material.Files[mapping.Remote]
+	for _, file := range output.OrderedFiles() {
+		content, ok := material.Files[file.Remote]
 		if !ok {
-			return fmt.Errorf("mapped bundle file %q is missing", mapping.Remote)
+			return fmt.Errorf("bundle file %q is missing", file.Remote)
 		}
-		destination := filepath.Join(temporary, mapping.Local)
-		if err := writeReleaseFile(destination, content, mapping.Mode.Perm(), output.DirectoryMode.Perm()); err != nil {
-			return fmt.Errorf("write release file %q: %w", mapping.Local, err)
+		destination := filepath.Join(temporary, file.Remote)
+		if err := writeReleaseFile(destination, content, file.Mode.Perm(), config.DefaultDirectoryMode.Perm()); err != nil {
+			return fmt.Errorf("write release file %q: %w", file.Remote, err)
 		}
 	}
-	if err := writeReleaseFile(filepath.Join(temporary, ".pemcast-digest"), []byte(material.Digest+"\n"), 0o600, output.DirectoryMode.Perm()); err != nil {
+	if err := writeReleaseFile(filepath.Join(temporary, ".pemcast-digest"), []byte(material.Digest+"\n"), 0o600, config.DefaultDirectoryMode.Perm()); err != nil {
 		return err
 	}
 	if err := syncDirectoryTree(temporary); err != nil {
@@ -230,38 +265,34 @@ func verifyRelease(releaseDir string, material *bundle.Material, output config.O
 	}
 
 	expected := map[string]fs.FileMode{".pemcast-digest": 0o600}
-	expectedDirs := make(map[string]struct{})
-	for _, mapping := range output.Mappings {
-		relative := filepath.FromSlash(mapping.Local)
+	for _, file := range output.OrderedFiles() {
+		relative := file.Remote
 		if _, duplicate := expected[relative]; duplicate {
-			return fmt.Errorf("duplicate local mapping %q", relative)
+			return fmt.Errorf("duplicate output role %q", file.Role)
 		}
-		mode := mapping.Mode.Perm()
+		mode := file.Mode.Perm()
 		if mode == 0 {
-			return fmt.Errorf("mapping %q has zero mode", relative)
+			return fmt.Errorf("output file %q has zero mode", relative)
 		}
 		expected[relative] = mode
-		for directory := filepath.Dir(relative); directory != "."; directory = filepath.Dir(directory) {
-			expectedDirs[directory] = struct{}{}
-		}
-		content := material.Files[mapping.Remote]
+		content := material.Files[file.Remote]
 		path := filepath.Join(releaseDir, relative)
 		info, err := os.Lstat(path)
 		if err != nil {
-			return fmt.Errorf("stat mapped file %q: %w", relative, err)
+			return fmt.Errorf("stat release file %q: %w", relative, err)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("mapped file %q is not a regular file", relative)
+			return fmt.Errorf("release file %q is not a regular file", relative)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("read mapped file %q: %w", relative, err)
+			return fmt.Errorf("read release file %q: %w", relative, err)
 		}
 		if !bytes.Equal(data, content) {
-			return fmt.Errorf("mapped file %q content mismatch", relative)
+			return fmt.Errorf("release file %q content mismatch", relative)
 		}
 		if info.Mode().Perm() != expected[relative] {
-			return fmt.Errorf("mapped file %q mode mismatch: got %o want %o", relative, info.Mode().Perm(), expected[relative])
+			return fmt.Errorf("release file %q mode mismatch: got %o want %o", relative, info.Mode().Perm(), expected[relative])
 		}
 	}
 
@@ -280,23 +311,13 @@ func verifyRelease(releaseDir string, material *bundle.Material, output config.O
 			if err != nil {
 				return err
 			}
-			if !info.IsDir() || info.Mode().Perm() != output.DirectoryMode.Perm() {
-				return fmt.Errorf("release root mode mismatch: got %o want %o", info.Mode().Perm(), output.DirectoryMode.Perm())
+			if !info.IsDir() || info.Mode().Perm() != config.DefaultDirectoryMode.Perm() {
+				return fmt.Errorf("release root mode mismatch: got %o want %o", info.Mode().Perm(), config.DefaultDirectoryMode.Perm())
 			}
 			return nil
 		}
 		if entry.IsDir() {
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			if info.Mode().Perm() != output.DirectoryMode.Perm() {
-				return fmt.Errorf("release directory %q mode mismatch: got %o want %o", relative, info.Mode().Perm(), output.DirectoryMode.Perm())
-			}
-			if _, expected := expectedDirs[filepath.FromSlash(relative)]; !expected {
-				return fmt.Errorf("release contains unexpected directory %q", relative)
-			}
-			return nil
+			return fmt.Errorf("release contains unexpected directory %q", relative)
 		}
 		if _, ok := expected[filepath.FromSlash(relative)]; !ok {
 			return fmt.Errorf("release contains unexpected entry %q", relative)
@@ -322,6 +343,10 @@ func writeReleaseFile(path string, content []byte, mode, directoryMode fs.FileMo
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
+		return err
+	}
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
 		return err
 	}
 	if _, err := file.Write(content); err != nil {

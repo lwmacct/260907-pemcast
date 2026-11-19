@@ -24,53 +24,36 @@ func (t Target) Validate() error {
 	if filepath.Clean(t.Output.Root) != t.Output.Root || t.Output.Root == string(filepath.Separator) {
 		return fmt.Errorf("output.root must be a clean, absolute, non-root path")
 	}
-	if !safeBundleName(t.Output.CurrentLink) {
-		return fmt.Errorf("output.current-link must be a safe file name")
+	expectedRoles := expectedOutputRoles(t.Type)
+	if len(expectedRoles) == 0 {
+		return fmt.Errorf("type must be one of tls-server, tls-client, or trust")
 	}
-	if err := t.Output.DirectoryMode.validate(); err != nil {
-		return fmt.Errorf("output.directory-mode is invalid: %w", err)
+	if len(t.Output.Files) != len(expectedRoles) {
+		return fmt.Errorf("type %q requires exactly %d output files", t.Type, len(expectedRoles))
 	}
-	if t.Output.DirectoryMode.Perm() == 0 {
-		return fmt.Errorf("output.directory-mode must not be zero")
+	for role := range t.Output.Files {
+		if _, ok := expectedRoles[role]; !ok {
+			return fmt.Errorf("output.files role %q is not valid for type %q", role, t.Type)
+		}
 	}
-	if t.Output.RetainReleases < 0 {
-		return fmt.Errorf("output.retain-releases must not be negative")
-	}
-	if len(t.Output.Mappings) == 0 {
-		return fmt.Errorf("output.mappings is required")
-	}
-	remote := make(map[string]struct{}, len(t.Output.Mappings))
-	local := make(map[string]struct{}, len(t.Output.Mappings))
-	for index, mapping := range t.Output.Mappings {
-		if !safeBundleName(mapping.Remote) {
-			return fmt.Errorf("output.mappings[%d].remote must be a safe bundle file name", index)
+	names := make(map[string]struct{}, len(t.Output.Files))
+	for role, file := range t.Output.Files {
+		if !safeBundleName(file.Name) {
+			return fmt.Errorf("output.files[%s].name must be a safe file name", role)
 		}
-		if !safeRelativePath(mapping.Local) {
-			return fmt.Errorf("output.mappings[%d].local must be a safe relative path", index)
+		if file.Name == DefaultCurrentLink || file.Name == ".pemcast" {
+			return fmt.Errorf("output.files[%s].name %q is reserved", role, file.Name)
 		}
-		if err := mapping.Mode.validate(); err != nil {
-			return fmt.Errorf("output.mappings[%d].mode is invalid: %w", index, err)
+		if err := file.Mode.validate(); err != nil {
+			return fmt.Errorf("output.files[%s].mode is invalid: %w", role, err)
 		}
-		if mapping.Mode.Perm() == 0 {
-			return fmt.Errorf("output.mappings[%d].mode must not be zero", index)
+		if file.Mode.Perm() == 0 {
+			return fmt.Errorf("output.files[%s].mode must not be zero", role)
 		}
-		if _, ok := remote[mapping.Remote]; ok {
-			return fmt.Errorf("remote mapping %q is duplicated", mapping.Remote)
+		if _, exists := names[file.Name]; exists {
+			return fmt.Errorf("output file name %q is duplicated", file.Name)
 		}
-		if _, ok := local[mapping.Local]; ok {
-			return fmt.Errorf("local mapping %q is duplicated", mapping.Local)
-		}
-		remote[mapping.Remote] = struct{}{}
-		local[mapping.Local] = struct{}{}
-	}
-	expected := expectedRemoteFiles(t.Type)
-	if len(remote) != len(expected) {
-		return fmt.Errorf("type %q requires exactly %d remote mappings", t.Type, len(expected))
-	}
-	for name := range expected {
-		if _, ok := remote[name]; !ok {
-			return fmt.Errorf("type %q is missing remote mapping %q", t.Type, name)
-		}
+		names[file.Name] = struct{}{}
 	}
 	if t.Validation.MinimumValidity < 0 {
 		return fmt.Errorf("validation.minimum-validity must not be negative")
@@ -103,15 +86,60 @@ func validBundleType(value string) bool {
 	return value == bundle.TypeTLSServer || value == bundle.TypeTLSClient || value == bundle.TypeTrust
 }
 
-func expectedRemoteFiles(bundleType string) map[string]struct{} {
+func expectedOutputRoles(bundleType string) map[string]struct{} {
 	switch bundleType {
 	case bundle.TypeTLSServer, bundle.TypeTLSClient:
-		return map[string]struct{}{
-			bundle.NameCertificateChain: {},
-			bundle.NamePrivateKey:       {},
+		return map[string]struct{}{"certificate-chain": {}, "private-key": {}}
+	case bundle.TypeTrust:
+		return map[string]struct{}{"ca-bundle": {}}
+	default:
+		return nil
+	}
+}
+
+func normalizeOutputFiles(bundleType string, files map[string]OutputFile) map[string]OutputFile {
+	defaults := defaultOutputFiles(bundleType)
+	if defaults == nil {
+		if files == nil {
+			return nil
+		}
+		result := make(map[string]OutputFile, len(files))
+		for role, file := range files {
+			result[role] = file
+		}
+		return result
+	}
+	result := make(map[string]OutputFile, len(defaults))
+	for role, file := range files {
+		if _, exists := defaults[role]; !exists {
+			result[role] = file
+		}
+	}
+	for role, resolved := range defaults {
+		if override, exists := files[role]; exists {
+			if override.Name != "" {
+				resolved.Name = override.Name
+			}
+			if override.Mode != "" {
+				resolved.Mode = override.Mode
+			}
+		}
+		result[role] = resolved
+	}
+	return result
+}
+
+func defaultOutputFiles(bundleType string) map[string]OutputFile {
+	switch bundleType {
+	case bundle.TypeTLSServer, bundle.TypeTLSClient:
+		return map[string]OutputFile{
+			"certificate-chain": {Name: bundle.NameCertificateChain, Mode: FileMode("0644")},
+			"private-key":       {Name: bundle.NamePrivateKey, Mode: FileMode("0600")},
 		}
 	case bundle.TypeTrust:
-		return map[string]struct{}{bundle.NameCABundle: {}}
+		return map[string]OutputFile{
+			"ca-bundle": {Name: bundle.NameCABundle, Mode: FileMode("0644")},
+		}
 	default:
 		return nil
 	}
@@ -135,11 +163,4 @@ func validEnvironmentName(name string) bool {
 
 func safeBundleName(value string) bool {
 	return value != "" && value != "." && value != ".." && filepath.Base(value) == value && !strings.ContainsAny(value, `/\\`)
-}
-
-func safeRelativePath(value string) bool {
-	if value == "" || filepath.IsAbs(value) || filepath.Clean(value) != value {
-		return false
-	}
-	return value != "." && value != ".." && !strings.HasPrefix(value, ".."+string(filepath.Separator))
 }

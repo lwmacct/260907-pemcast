@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -11,15 +12,16 @@ import (
 	"github.com/lwmacct/260907-pemcast/internal/config"
 )
 
+func identityOutput(root string) config.Output {
+	return config.Output{Root: root, Files: map[string]config.OutputFile{
+		"certificate-chain": {Name: "fullchain.pem", Mode: config.FileMode("0644")},
+		"private-key":       {Name: "privkey.pem", Mode: config.FileMode("0600")},
+	}}
+}
+
 func TestActivateSwitchesCompleteReleaseAndSkipsSameDigest(t *testing.T) {
 	root := t.TempDir()
-	output := config.Output{
-		Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
-		Mappings: []config.FileMapping{
-			{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: config.FileMode("0644")},
-			{Remote: "privkey.pem", Local: "nested/privkey.pem", Mode: config.FileMode("0600")},
-		},
-	}
+	output := identityOutput(root)
 	material := &bundle.Material{Digest: "abc123", Files: map[string][]byte{
 		"fullchain.pem": []byte("certificate"), "privkey.pem": []byte("private-key"),
 	}}
@@ -28,8 +30,8 @@ func TestActivateSwitchesCompleteReleaseAndSkipsSameDigest(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Changed)
 	require.Equal(t, []byte("certificate"), mustRead(t, filepath.Join(root, "current", "fullchain.pem")))
-	require.Equal(t, []byte("private-key"), mustRead(t, filepath.Join(root, "current", "nested", "privkey.pem")))
-	info, err := os.Stat(filepath.Join(root, "current", "nested", "privkey.pem"))
+	require.Equal(t, []byte("private-key"), mustRead(t, filepath.Join(root, "current", "privkey.pem")))
+	info, err := os.Stat(filepath.Join(root, "current", "privkey.pem"))
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
@@ -40,19 +42,31 @@ func TestActivateSwitchesCompleteReleaseAndSkipsSameDigest(t *testing.T) {
 
 func TestActivatePrunesInactiveReleases(t *testing.T) {
 	root := t.TempDir()
-	output := config.Output{
-		Root: root, CurrentLink: "current", RetainReleases: 0, DirectoryMode: config.FileMode("0700"),
-		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
-	}
+	output := identityOutput(root)
 	deployer := New()
-	_, err := deployer.Activate(&bundle.Material{Digest: "first", Files: map[string][]byte{"cert": []byte("one")}}, output)
-	require.NoError(t, err)
-	_, err = deployer.Activate(&bundle.Material{Digest: "second", Files: map[string][]byte{"cert": []byte("two")}}, output)
+	materials := map[string]*bundle.Material{
+		"first":  {Digest: "first", Files: map[string][]byte{"fullchain.pem": []byte("one"), "privkey.pem": []byte("one-key")}},
+		"second": {Digest: "second", Files: map[string][]byte{"fullchain.pem": []byte("two"), "privkey.pem": []byte("two-key")}},
+		"third":  {Digest: "third", Files: map[string][]byte{"fullchain.pem": []byte("three"), "privkey.pem": []byte("three-key")}},
+		"fourth": {Digest: "fourth", Files: map[string][]byte{"fullchain.pem": []byte("four"), "privkey.pem": []byte("four-key")}},
+		"fifth":  {Digest: "fifth", Files: map[string][]byte{"fullchain.pem": []byte("five"), "privkey.pem": []byte("five-key")}},
+	}
+	for _, digest := range []string{"first", "second", "third", "fourth"} {
+		_, err := deployer.Activate(materials[digest], output)
+		require.NoError(t, err)
+	}
+	for index, digest := range []string{"first", "second", "third", "fourth"} {
+		modTime := time.Now().Add(time.Duration(index) * time.Minute)
+		path := filepath.Join(root, managedDirectory, "releases", "sha256-"+digest)
+		require.NoError(t, os.Chtimes(path, modTime, modTime))
+	}
+	_, err := deployer.Activate(materials["fifth"], output)
 	require.NoError(t, err)
 	entries, err := os.ReadDir(filepath.Join(root, managedDirectory, "releases"))
 	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	require.Equal(t, "sha256-second", entries[0].Name())
+	require.Len(t, entries, config.DefaultRetainReleases+1)
+	require.DirExists(t, filepath.Join(root, managedDirectory, "releases", "sha256-fifth"))
+	require.NoDirExists(t, filepath.Join(root, managedDirectory, "releases", "sha256-first"))
 }
 
 func TestActivateRejectsCorruptActiveRelease(t *testing.T) {
@@ -78,14 +92,14 @@ func TestActivateRejectsCorruptActiveRelease(t *testing.T) {
 		{
 			name: "file content",
 			mutate: func(t *testing.T, root string) {
-				require.NoError(t, os.WriteFile(filepath.Join(root, "current", "cert"), []byte("changed"), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(root, "current", "fullchain.pem"), []byte("changed"), 0o600))
 			},
 			message: "content mismatch",
 		},
 		{
 			name: "file mode",
 			mutate: func(t *testing.T, root string) {
-				require.NoError(t, os.Chmod(filepath.Join(root, "current", "cert"), 0o644))
+				require.NoError(t, os.Chmod(filepath.Join(root, "current", "fullchain.pem"), 0o600))
 			},
 			message: "mode mismatch",
 		},
@@ -106,7 +120,7 @@ func TestActivateRejectsCorruptActiveRelease(t *testing.T) {
 		{
 			name: "symlink inside release",
 			mutate: func(t *testing.T, root string) {
-				path := filepath.Join(root, "current", "cert")
+				path := filepath.Join(root, "current", "fullchain.pem")
 				require.NoError(t, os.Remove(path))
 				require.NoError(t, os.Symlink("../../../secret", path))
 			},
@@ -117,11 +131,10 @@ func TestActivateRejectsCorruptActiveRelease(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			output := config.Output{
-				Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
-				Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
-			}
-			material := &bundle.Material{Digest: "digest", Files: map[string][]byte{"cert": []byte("certificate")}}
+			output := identityOutput(root)
+			material := &bundle.Material{Digest: "digest", Files: map[string][]byte{
+				"fullchain.pem": []byte("certificate"), "privkey.pem": []byte("private-key"),
+			}}
 			deployer := New()
 			_, err := deployer.Activate(material, output)
 			require.NoError(t, err)
@@ -169,13 +182,11 @@ func TestActivateRejectsUnsafeCurrentPath(t *testing.T) {
 			root := t.TempDir()
 			require.NoError(t, os.MkdirAll(root, 0o700))
 			test.create(t, root)
-			output := config.Output{
-				Root: root, CurrentLink: "current", DirectoryMode: config.FileMode("0700"),
-				Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
-			}
 			_, err := New().Activate(&bundle.Material{
-				Digest: "digest", Files: map[string][]byte{"cert": []byte("certificate")},
-			}, output)
+				Digest: "digest", Files: map[string][]byte{
+					"fullchain.pem": []byte("certificate"), "privkey.pem": []byte("private-key"),
+				},
+			}, identityOutput(root))
 			require.Error(t, err)
 		})
 	}
@@ -183,13 +194,15 @@ func TestActivateRejectsUnsafeCurrentPath(t *testing.T) {
 
 func TestActivateDoesNotPruneActiveRelease(t *testing.T) {
 	root := t.TempDir()
-	output := config.Output{
-		Root: root, CurrentLink: "current", RetainReleases: 0, DirectoryMode: config.FileMode("0700"),
-		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
-	}
+	output := identityOutput(root)
 	deployer := New()
 	for _, digest := range []string{"first", "second"} {
-		_, err := deployer.Activate(&bundle.Material{Digest: digest, Files: map[string][]byte{"cert": []byte(digest)}}, output)
+		_, err := deployer.Activate(&bundle.Material{
+			Digest: digest,
+			Files: map[string][]byte{
+				"fullchain.pem": []byte(digest + "-cert"), "privkey.pem": []byte(digest + "-key"),
+			},
+		}, output)
 		require.NoError(t, err)
 	}
 	require.DirExists(t, filepath.Join(root, ".pemcast", "releases", "sha256-second"))
@@ -197,90 +210,127 @@ func TestActivateDoesNotPruneActiveRelease(t *testing.T) {
 
 func TestActivateCreatesStableLinks(t *testing.T) {
 	root := t.TempDir()
-	output := config.Output{
-		Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
-		Mappings: []config.FileMapping{
-			{Remote: "fullchain.pem", Local: "fullchain.pem", Mode: config.FileMode("0644")},
-			{Remote: "privkey.pem", Local: "privkey.pem", Mode: config.FileMode("0600")},
-			{Remote: "extra", Local: "nested/extra.pem", Mode: config.FileMode("0600")},
-		},
-	}
+	output := identityOutput(root)
+	certificate := output.Files["certificate-chain"]
+	certificate.Name = "tls.crt"
+	output.Files["certificate-chain"] = certificate
+	privateKey := output.Files["private-key"]
+	privateKey.Name = "tls.key"
+	output.Files["private-key"] = privateKey
 	deployer := New()
 	_, err := deployer.Activate(&bundle.Material{
 		Digest: "digest", Files: map[string][]byte{
-			"fullchain.pem": []byte("cert"), "privkey.pem": []byte("key"), "extra": []byte("data"),
+			"fullchain.pem": []byte("cert"), "privkey.pem": []byte("key"),
 		},
 	}, output)
 	require.NoError(t, err)
 
-	link, err := os.Readlink(filepath.Join(root, "fullchain.pem"))
+	link, err := os.Readlink(filepath.Join(root, "tls.crt"))
 	require.NoError(t, err)
 	require.Equal(t, "current/fullchain.pem", link)
-	require.Equal(t, []byte("cert"), mustRead(t, filepath.Join(root, "fullchain.pem")))
+	require.Equal(t, []byte("cert"), mustRead(t, filepath.Join(root, "tls.crt")))
 
-	link, err = os.Readlink(filepath.Join(root, "privkey.pem"))
+	link, err = os.Readlink(filepath.Join(root, "tls.key"))
 	require.NoError(t, err)
 	require.Equal(t, "current/privkey.pem", link)
-	require.Equal(t, []byte("key"), mustRead(t, filepath.Join(root, "privkey.pem")))
+	require.Equal(t, []byte("key"), mustRead(t, filepath.Join(root, "tls.key")))
 
-	_, err = os.Lstat(filepath.Join(root, "nested"))
-	require.ErrorIs(t, err, os.ErrNotExist, "subdirectory mappings should not produce root-level links")
+	_, err = os.Lstat(filepath.Join(root, "fullchain.pem"))
+	require.ErrorIs(t, err, os.ErrNotExist, "canonical bundle names are not public aliases")
 }
 
 func TestActivateStableLinksIdempotent(t *testing.T) {
 	root := t.TempDir()
-	output := config.Output{
-		Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
-		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
-	}
+	output := identityOutput(root)
 	deployer := New()
-	_, err := deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("first")}}, output)
+	material := &bundle.Material{Digest: "one", Files: map[string][]byte{
+		"fullchain.pem": []byte("first"), "privkey.pem": []byte("first-key"),
+	}}
+	_, err := deployer.Activate(material, output)
 	require.NoError(t, err)
 
-	info1, err := os.Lstat(filepath.Join(root, "cert"))
+	info1, err := os.Lstat(filepath.Join(root, "fullchain.pem"))
 	require.NoError(t, err)
 
-	_, err = deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("first")}}, output)
+	_, err = deployer.Activate(material, output)
 	require.NoError(t, err)
 
-	info2, err := os.Lstat(filepath.Join(root, "cert"))
+	info2, err := os.Lstat(filepath.Join(root, "fullchain.pem"))
 	require.NoError(t, err)
 	require.Equal(t, info1.ModTime(), info2.ModTime(), "unchanged digest should not replace existing correct link")
 }
 
 func TestActivateStableLinksRepairMissing(t *testing.T) {
 	root := t.TempDir()
-	output := config.Output{
-		Root: root, CurrentLink: "current", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
-		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
-	}
+	output := identityOutput(root)
 	deployer := New()
-	_, err := deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("data")}}, output)
+	material := &bundle.Material{Digest: "one", Files: map[string][]byte{
+		"fullchain.pem": []byte("data"), "privkey.pem": []byte("data-key"),
+	}}
+	_, err := deployer.Activate(material, output)
 	require.NoError(t, err)
-	require.NoError(t, os.Remove(filepath.Join(root, "cert")))
+	require.NoError(t, os.Remove(filepath.Join(root, "fullchain.pem")))
 
-	_, err = deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("data")}}, output)
+	_, err = deployer.Activate(material, output)
 	require.NoError(t, err)
 
-	link, err := os.Readlink(filepath.Join(root, "cert"))
+	link, err := os.Readlink(filepath.Join(root, "fullchain.pem"))
 	require.NoError(t, err)
-	require.Equal(t, "current/cert", link)
+	require.Equal(t, "current/fullchain.pem", link)
 }
 
-func TestActivateStableLinksSkipsCurrentLinkName(t *testing.T) {
+func TestActivateChangedGenerationReplacesStableLinks(t *testing.T) {
 	root := t.TempDir()
-	output := config.Output{
-		Root: root, CurrentLink: "cert", RetainReleases: 1, DirectoryMode: config.FileMode("0700"),
-		Mappings: []config.FileMapping{{Remote: "cert", Local: "cert", Mode: config.FileMode("0600")}},
-	}
+	output := identityOutput(root)
 	deployer := New()
-	_, err := deployer.Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{"cert": []byte("data")}}, output)
+	first := &bundle.Material{Digest: "one", Files: map[string][]byte{
+		"fullchain.pem": []byte("one"), "privkey.pem": []byte("one-key"),
+	}}
+	second := &bundle.Material{Digest: "two", Files: map[string][]byte{
+		"fullchain.pem": []byte("two"), "privkey.pem": []byte("two-key"),
+	}}
+	_, err := deployer.Activate(first, output)
+	require.NoError(t, err)
+	before, err := os.Lstat(filepath.Join(root, "fullchain.pem"))
 	require.NoError(t, err)
 
-	link, err := os.Readlink(filepath.Join(root, "cert"))
+	_, err = deployer.Activate(second, output)
 	require.NoError(t, err)
-	require.NotEqual(t, "cert/cert", link, "current-link name must not be shadowed by stable link")
-	require.Contains(t, link, "releases", "cert should remain the directory current-link")
+	after, err := os.Lstat(filepath.Join(root, "fullchain.pem"))
+	require.NoError(t, err)
+	require.NotEqual(t, before.ModTime(), after.ModTime(), "changed generation must replace the public alias")
+	require.Equal(t, []byte("two"), mustRead(t, filepath.Join(root, "fullchain.pem")))
+}
+
+func TestActivateRemovesStaleManagedPublicAlias(t *testing.T) {
+	root := t.TempDir()
+	output := identityOutput(root)
+	deployer := New()
+	material := &bundle.Material{Digest: "one", Files: map[string][]byte{
+		"fullchain.pem": []byte("certificate"), "privkey.pem": []byte("private-key"),
+	}}
+	_, err := deployer.Activate(material, output)
+	require.NoError(t, err)
+
+	certificate := output.Files["certificate-chain"]
+	certificate.Name = "tls.crt"
+	output.Files["certificate-chain"] = certificate
+	_, err = deployer.Activate(material, output)
+	require.NoError(t, err)
+	require.NoFileExists(t, filepath.Join(root, "fullchain.pem"))
+	require.FileExists(t, filepath.Join(root, "tls.crt"))
+}
+
+func TestActivateRejectsUnmanagedOutputRootEntry(t *testing.T) {
+	root := t.TempDir()
+	output := identityOutput(root)
+	require.NoError(t, os.MkdirAll(root, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "business.txt"), nil, 0o600))
+
+	_, err := New().Activate(&bundle.Material{Digest: "one", Files: map[string][]byte{
+		"fullchain.pem": []byte("certificate"), "privkey.pem": []byte("private-key"),
+	}}, output)
+	require.ErrorContains(t, err, "unexpected unmanaged entry")
 }
 
 func mustRead(t *testing.T, path string) []byte {

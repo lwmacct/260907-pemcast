@@ -87,9 +87,9 @@ func Material(options Options) (*bundle.Material, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("validate target certificate validity: %w", err)
 	}
-	for _, mapping := range options.Target.Output.Mappings {
-		if _, ok := files[mapping.Remote]; !ok {
-			return nil, fmt.Errorf("mapped pack file %q is missing", mapping.Remote)
+	for _, file := range options.Target.Output.OrderedFiles() {
+		if _, ok := files[file.Remote]; !ok {
+			return nil, fmt.Errorf("pack file for output role %q is missing", file.Role)
 		}
 	}
 
