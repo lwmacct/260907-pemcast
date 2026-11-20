@@ -20,7 +20,7 @@ const AppName = "pemcast"
 // cfgm expands these standard etcdctl-compatible defaults before the config is
 // decoded. Command-specific credential aliases are deliberately not used.
 const (
-	DefaultEtcdEndpointsTemplate = `${ETCDCTL_ENDPOINTS:?ETCDCTL_ENDPOINTS is required}`
+	DefaultEtcdEndpointsTemplate = `${ETCDCTL_ENDPOINTS:-}`
 	DefaultEtcdUserTemplate      = `${ETCDCTL_USER:-}`
 )
 

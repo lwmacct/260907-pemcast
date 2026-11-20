@@ -25,6 +25,8 @@ func TestPublishCommandRejectsMissingPack(t *testing.T) {
 }
 
 func TestPublishCommandRequiresEtcdName(t *testing.T) {
+	t.Setenv("ETCDCTL_ENDPOINTS", "http://127.0.0.1:1")
+
 	application := &cli.Command{Name: "pemcast", Commands: []*cli.Command{Command}}
 	appconfig.Manager.MustConfigure(application)
 

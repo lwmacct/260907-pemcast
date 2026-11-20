@@ -11,7 +11,7 @@ agent:
   etcds:
     - name: "default" # unique agent-local etcd name
       prefix: "/pemcast" # etcd namespace prefix placed before /v6
-      endpoints: "${ETCDCTL_ENDPOINTS:?ETCDCTL_ENDPOINTS is required}" # comma-separated etcd endpoint URLs
+      endpoints: "${ETCDCTL_ENDPOINTS:-}" # comma-separated etcd endpoint URLs
       user: "${ETCDCTL_USER:-}" # agent authentication as username:password; empty disables authentication
       dial-timeout: 5s # etcd connection timeout
       request-timeout: 10s # timeout for an etcd read

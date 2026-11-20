@@ -33,6 +33,8 @@ func TestPruneCommandRequiresExactlyOneMode(t *testing.T) {
 }
 
 func TestPruneCommandRequiresEtcdName(t *testing.T) {
+	t.Setenv("ETCDCTL_ENDPOINTS", "http://127.0.0.1:1")
+
 	err := application.Run(t.Context(), []string{"pemcast", "prune", "--dry-run"})
 	require.ErrorContains(t, err, "agent etcd name is required")
 }
