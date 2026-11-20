@@ -52,7 +52,7 @@ pemcast tools pack \
 
 ## 推荐 publish
 
-`pemcast publish` 复用 `agent.etcds[]` 的 endpoints, TLS 和 timeout; 未指定 `--etcd-name` 时选择 `name: default`, 没有该名字时选择数组第一个. `management-user` 非空时直接作为管理凭据, 为空时使用命令特定环境模板:
+`pemcast publish` 复用指定 `agent.etcds[]` entry 的 endpoints, TLS 和 timeout. `--etcd-name` 必填, 不做 default 或第一个 entry 的隐式选择. 该 entry 的 `management-user` 直接作为管理凭据:
 
 ```bash
 pemcast --config /etc/pemcast/config.yaml publish \
@@ -63,10 +63,12 @@ pemcast --config /etc/pemcast/config.yaml publish \
 也可以使用配置文件:
 
 ```bash
-pemcast --config /etc/pemcast/publish.yaml publish --pack-dir /secure/tmp/nginx-pack
+pemcast --config /etc/pemcast/publish.yaml publish \
+  --etcd-name default \
+  --pack-dir /secure/tmp/nginx-pack
 ```
 
-publish 的 user 环境变量优先级是 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 值使用 etcdctl 的 `username:password` 格式, 并按第一个冒号切分, 密码可以继续包含冒号.
+默认配置中的 `user` 与 `management-user` 由 cfgm 展开 `${ETCDCTL_USER}`. 值使用 etcdctl 的 `username:password` 格式, 并按第一个冒号切分, 密码可以继续包含冒号. 多 tenant source 必须显式配置自己的凭据.
 
 `publish` 会:
 

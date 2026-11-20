@@ -20,12 +20,10 @@ var Command = &cli.Command{
 	Usage: "stage a v6 pack and commit its active pointer with etcd CAS",
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "pack-dir", Usage: "directory containing bundle.json and metadata.json", Required: true},
-		&cli.StringFlag{Name: "etcd-name", Usage: "agent.etcds name; defaults to default or the first entry"},
+		&cli.StringFlag{Name: "etcd-name", Usage: "agent.etcds name for this publication", Required: true},
 	},
 	Action: func(ctx context.Context, command *cli.Command) error {
-		etcd, err := config.ResolveEtcdCommand(
-			ctx, command.Root(), command.String("etcd-name"), config.PublishEtcdUserTemplate,
-		)
+		etcd, err := config.ResolveEtcdCommand(ctx, command.Root(), command.String("etcd-name"))
 		if err != nil {
 			return err
 		}

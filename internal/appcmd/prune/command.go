@@ -19,7 +19,7 @@ var Command = &cli.Command{
 	Name:  "prune",
 	Usage: "report or delete non-active identity bundles past certificate retention",
 	Flags: []cli.Flag{
-		&cli.StringFlag{Name: "etcd-name", Usage: "agent.etcds name; defaults to default or the first entry"},
+		&cli.StringFlag{Name: "etcd-name", Usage: "agent.etcds name for this lifecycle operation", Required: true},
 		&cli.DurationFlag{Name: "retention", Usage: "keep inactive identity bundles for this long after their earliest certificate NotAfter", Value: 720 * time.Hour},
 		&cli.BoolFlag{Name: "dry-run", Usage: "report candidates without writing etcd"},
 		&cli.BoolFlag{Name: "delete", Usage: "delete eligible non-active identity bundles with exact-key conditional transactions"},
@@ -29,9 +29,7 @@ var Command = &cli.Command{
 		if dryRun == delete {
 			return fmt.Errorf("choose exactly one of --dry-run or --delete")
 		}
-		etcd, err := config.ResolveEtcdCommand(
-			ctx, command.Root(), command.String("etcd-name"), config.PruneEtcdUserTemplate,
-		)
+		etcd, err := config.ResolveEtcdCommand(ctx, command.Root(), command.String("etcd-name"))
 		if err != nil {
 			return err
 		}

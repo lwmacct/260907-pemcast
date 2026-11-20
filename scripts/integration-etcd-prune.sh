@@ -113,7 +113,8 @@ __revision() {
 }
 
 __prune() {
-	"${_binary}" --config "${_work_dir}/agent.yaml" prune "$@"
+	"${_binary}" --config "${_work_dir}/agent.yaml" prune \
+		--etcd-name default "$@"
 }
 
 __write_agent_config() {
@@ -121,7 +122,7 @@ __write_agent_config() {
 agent:
   etcds:
     - name: default
-      endpoints: ["http://127.0.0.1:${_etcd_port}"]
+      endpoints: http://127.0.0.1:${_etcd_port}
       prefix: /pemcast
       dial-timeout: 1s
       request-timeout: 2s
@@ -140,7 +141,7 @@ YAML
 }
 
 __main() {
-	unset ETCDCTL_USER ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH ETCDCTL_USER_UPGRADE ETCDCTL_USER_PRUNE
+	unset ETCDCTL_USER
 	__require_commands
 	if [[ -n "${_provided_binary}" ]]; then
 		test -x "${_provided_binary}"

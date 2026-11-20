@@ -10,7 +10,7 @@ pemcast --config /etc/pemcast/config.yaml config validate
 生效值的加载顺序是 defaults, 第一个默认文件, explicit config, `PEMCAST_*` 环境变量, 最后是 CLI flag. 环境变量 key 使用完整 schema path, 并把 `.` 和 `-` 替换为 `_`:
 
 ```text
-PEMCAST_AGENT_ETCDS='[{"name":"default","endpoints":["https://etcd-1:2379"],"prefix":"/pemcast"}]'
+PEMCAST_AGENT_ETCDS='[{"name":"default","endpoints":"https://etcd-1:2379","prefix":"/pemcast"}]'
 PEMCAST_AGENT_ONCE=true
 PEMCAST_AGENT_WATCH_PROGRESS_INTERVAL=30s
 PEMCAST_AGENT_WATCH_PROGRESS_TIMEOUT=2m
@@ -111,8 +111,7 @@ node agent 配置使用:
 agent:
   etcds:
     - name: default
-      endpoints:
-        - https://etcd.example:2379
+      endpoints: https://etcd.example:2379
       prefix: /pemcast
       user: agent-user:<password>
       management-user: publisher-user:<password>
@@ -121,7 +120,7 @@ agent:
       etcd: default
 ```
 
-发布端从 `agent.etcds[]` 选择连接; 未指定 `--etcd-name` 时优先选择 `name: default`, 否则选择数组第一个. `agent.etcds[].user` 是 agent 凭据, `management-user` 是管理命令凭据. `management-user` 为空时, publish 依次读取 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`, upgrade 依次读取 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 手动 fallback 使用 etcdctl 标准环境变量.
+发布端通过必填 `--etcd-name` 从 `agent.etcds[]` 选择连接. `agent.etcds[].user` 是 agent 凭据, `management-user` 是管理命令凭据; 默认 source 二者都由 cfgm 展开 `${ETCDCTL_USER}`, 多 tenant source 必须显式配置. 手动 etcdctl fallback 继续使用 etcdctl 标准环境变量.
 
 使用公共可信 CA 签发的 etcd 服务端证书时, 通常不需要额外配置 `agent.etcds[].tls.ca-file`. 如果 endpoint 是 IP 而证书只包含域名, 优先配置 `agent.etcds[].tls.server-name` 为证书域名; 仅在证书过期等临时应急场景使用 `insecure-skip-verify`.
 
@@ -129,7 +128,7 @@ pemcast 自身连接 etcd 使用的 CA 必须先存在于本地受管配置中; 
 
 ## v5 到 v6 upgrade
 
-`pemcast upgrade` 是在线 prefix 迁移命令, 只支持 canonical v5 active bundle 到 v6. 它需要读取 `<prefix>/v5/` 和 `<prefix>/v6/`, 写入 `<prefix>/v6/`; 如需清理还必须能删除 `<prefix>/v5/`. etcd root 或 broad namespace readwrite user 都可以使用, 推荐用专用 `ETCDCTL_USER_UPGRADE`.
+`pemcast upgrade` 是在线 prefix 迁移命令, 只支持 canonical v5 active bundle 到 v6. 它需要读取 `<prefix>/v5/` 和 `<prefix>/v6/`, 写入 `<prefix>/v6/`; 如需清理还必须能删除 `<prefix>/v5/`. etcd root 或 broad namespace readwrite user 都可以使用, 推荐为选中 source 配置专用 `management-user`.
 
 先 dry-run 并显式声明 type:
 

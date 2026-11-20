@@ -19,7 +19,6 @@ __cleanup() {
 }
 
 __main() {
-	unset ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH
 	(cd "${_repo_root}" && go build -o "${_binary}" ./cmd/pemcast)
 
 	docker rm -f "${_container}" >/dev/null 2>&1 || true
@@ -39,7 +38,6 @@ __main() {
 	)"
 	test -n "${_etcd_port}"
 	_endpoint="http://127.0.0.1:${_etcd_port}"
-	_endpoints_json="$(jq -Rn --arg endpoint "${_endpoint}" '[$endpoint]')"
 
 	export ETCDCTL_ENDPOINTS="${_endpoint}"
 	etcdctl endpoint status >/dev/null
@@ -96,14 +94,14 @@ __main() {
 agent:
   etcds:
     - name: bendian
-      endpoints: ${_endpoints_json}
+      endpoints: ${_endpoint}
       prefix: /pemcast/tenants/bendian
       user: agent-bendian:agent-bendian-password
       management-user: publisher-bendian:publisher-bendian-password
       dial-timeout: 1s
       request-timeout: 2s
     - name: lwmacct
-      endpoints: ${_endpoints_json}
+      endpoints: ${_endpoint}
       prefix: /pemcast/tenants/lwmacct
       user: agent-lwmacct:agent-lwmacct-password
       management-user: publisher-lwmacct:publisher-lwmacct-password

@@ -113,6 +113,14 @@ func TestValidateRejectsInvalidOutputFileMode(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "mode is invalid")
 }
 
+func TestValidateRejectsEmptyEtcdEndpointElement(t *testing.T) {
+	target := validTarget("nginx", filepath.Join(t.TempDir(), "tls"))
+	cfg := singleSourceConfig(target)
+	cfg.Agent.Etcds[0].Endpoints = "https://etcd-a.example:2379,,https://etcd-b.example:2379"
+
+	require.ErrorContains(t, cfg.Validate(), "endpoints[1] is empty")
+}
+
 func TestValidateRejectsOverlappingOutputRootsAcrossSources(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "tls")
 	cfg := DefaultConfig()
@@ -149,23 +157,17 @@ func TestValidateAndBuildMultipleSourceRuntimes(t *testing.T) {
 	require.Equal(t, []string{"shared"}, targetIDs(runtimes[1].Targets))
 }
 
-func TestSelectEtcdPrefersDefaultThenFirstAndMatchesName(t *testing.T) {
+func TestSelectEtcdRequiresExplicitNameAndMatchesName(t *testing.T) {
 	cfg := DefaultConfig()
 	first := validSourceEtcd("first", "/tenants/first", "first-agent:first-secret")
 	defaultEtcd := validSourceEtcd("default", "/tenants/default", "default-agent:default-secret")
 	second := validSourceEtcd("second", "/tenants/second", "second-agent:second-secret")
 	cfg.Agent.Etcds = []Source{first, defaultEtcd, second}
 
-	selected, err := cfg.Agent.SelectEtcd("")
-	require.NoError(t, err)
-	require.Equal(t, "default", selected.Name)
+	_, err := cfg.Agent.SelectEtcd("")
+	require.ErrorContains(t, err, "agent etcd name is required")
 
-	cfg.Agent.Etcds = []Source{first, second}
-	selected, err = cfg.Agent.SelectEtcd("")
-	require.NoError(t, err)
-	require.Equal(t, "first", selected.Name)
-
-	selected, err = cfg.Agent.SelectEtcd("second")
+	selected, err := cfg.Agent.SelectEtcd("second")
 	require.NoError(t, err)
 	require.Equal(t, "second", selected.Name)
 
@@ -244,6 +246,10 @@ func TestValidateRejectsDuplicateTargetsSourcesAndInvalidUsers(t *testing.T) {
 	cfg.Agent.Etcds = []Source{validSourceEtcd("bendian", "/tenants/bendian", "missing-password")}
 	cfg.Agent.Targets = []Target{targetForSource("bendian", validTarget("shared", root))}
 	require.ErrorContains(t, cfg.Validate(), "etcd user")
+
+	cfg.Agent.Etcds[0].User = "agent:agent-secret"
+	cfg.Agent.Etcds[0].ManagementUser = "missing-management-password"
+	require.ErrorContains(t, cfg.Validate(), "management-user")
 }
 
 func singleSourceConfig(targets ...Target) Config {
@@ -286,7 +292,7 @@ func publicFileNames(output Output) []string {
 
 func validSourceEtcd(name, prefix, user string) Source {
 	return Source{
-		Name: name, Prefix: prefix, Endpoints: []string{"https://etcd.example:2379"}, User: user,
+		Name: name, Prefix: prefix, Endpoints: "https://etcd.example:2379", User: user,
 		DialTimeout: time.Second, RequestTimeout: time.Second,
 	}
 }

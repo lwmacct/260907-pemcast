@@ -105,7 +105,7 @@ __sync_tls_volume() {
 __publish() {
 	_name="$1"
 	"${_binary}" --config "${_work_dir}/agent.yaml" publish \
-		--pack-dir "${_work_dir}/pack-${_name}" >/dev/null
+		--etcd-name default --pack-dir "${_work_dir}/pack-${_name}" >/dev/null
 }
 
 __start_agent() {
@@ -120,7 +120,7 @@ __write_agent_config() {
 agent:
   etcds:
     - name: default
-      endpoints: ["${_endpoint}"]
+      endpoints: ${_endpoint}
       prefix: /pemcast
       user: agent-integration:agent-integration-password
       management-user: publisher-integration:publisher-integration-password
@@ -144,7 +144,7 @@ YAML
 }
 
 __main() {
-	unset ETCDCTL_USER ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH
+	unset ETCDCTL_USER
 	if [[ -n "${_provided_binary}" ]]; then
 		test -x "${_provided_binary}"
 	else

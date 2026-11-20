@@ -91,7 +91,7 @@ validation:
 /pemcast/v6/bundles/nginx/sha256-<bundle-digest> = complete JSON bundle
 ```
 
-etcd 认证使用单个 `username:password` 值, 按第一个冒号切分, 密码可以继续包含冒号. `agent.etcds[].user` 是 agent 凭据; `management-user` 是可选的 publish/upgrade/prune 凭据, 为空时按命令依次使用环境变量 fallback. publish 使用 `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`; upgrade 使用 `ETCDCTL_USER_UPGRADE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`; prune 使用 `ETCDCTL_USER_PRUNE`, `ETCDCTL_USER_PUBLISH`, `ETCDCTL_USER`. 包含凭据的配置文件必须具有最小权限, 并纳入与私钥相同的 secret 管理边界.
+`agent.etcds[].endpoints` 是逗号分隔的字符串, 默认 source 使用 `${ETCDCTL_ENDPOINTS}` 展开. etcd 认证使用单个 `username:password` 值, 按第一个冒号切分, 密码可以继续包含冒号; 默认 source 的 `user` 与 `management-user` 都使用 `${ETCDCTL_USER}` 展开, 为空表示匿名访问. 多 tenant source 应显式覆盖为自己的 agent 与管理凭据. 包含凭据的配置文件必须具有最小权限, 并纳入与私钥相同的 secret 管理边界.
 
 本地打包:
 
@@ -141,14 +141,12 @@ pemcast tools pack \
 agent:
   etcds:
     - name: bendian
-      endpoints:
-        - https://etcd.example:2379
+      endpoints: https://etcd.example:2379
       prefix: /pemcast/tenants/bendian
       user: agent-bendian:password
       management-user: publisher-bendian:password
     - name: lwmacct
-      endpoints:
-        - https://etcd.example:2379
+      endpoints: https://etcd.example:2379
       prefix: /pemcast/tenants/lwmacct
       user: agent-lwmacct:password
       management-user: publisher-lwmacct:password
@@ -163,7 +161,7 @@ agent:
 
 每个 etcd 拥有独立 client, snapshot/watch session 和重试状态; 所有 output root 仍由同一个进程按排序加锁, `agent.max-concurrent` 是全局并发上限. 不同 etcd 下的 target ID 可以相同, 因为它们属于不同远端 namespace.
 
-publish, upgrade 与 prune 不再维护独立 management 配置. 它们默认选择 `name: default` 的 etcd; 没有该名字时选择数组第一个 entry. 操作其他 tenant 时传 `--etcd-name <name>`.
+publish, upgrade 与 prune 不再维护独立 management 配置. 它们通过必填 `--etcd-name <name>` 从 `agent.etcds[]` 选择连接, 并使用该 entry 的 `management-user`.
 
 ### 本地 seed
 
@@ -398,7 +396,6 @@ docker run --rm --platform linux/amd64 \
 docker run --rm --platform linux/amd64 \
   --volume "${_work}:/work:ro" \
   --volume "${PEMCAST_CONFIG}:/config.yaml:ro" \
-  -e ETCDCTL_USER_PUBLISH='publish:...' \
   "${_image}" \
   pemcast --config /config.yaml publish \
     --etcd-name bendian --pack-dir /work/pack

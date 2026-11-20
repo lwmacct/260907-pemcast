@@ -121,7 +121,7 @@ __write_agent_config() {
 agent:
   etcds:
     - name: default
-      endpoints: ["http://127.0.0.1:${_etcd_port}"]
+      endpoints: http://127.0.0.1:${_etcd_port}
       prefix: /pemcast
       user: agent-upgrade-integration:agent-upgrade-integration-password
       management-user: publisher-upgrade-integration:publisher-upgrade-integration-password
@@ -142,7 +142,8 @@ YAML
 }
 
 __upgrade() {
-	"${_binary}" --config "${_work_dir}/agent.yaml" upgrade "$@"
+	"${_binary}" --config "${_work_dir}/agent.yaml" upgrade \
+		--etcd-name default "$@"
 }
 
 __prefix_count() {
@@ -151,7 +152,7 @@ __prefix_count() {
 }
 
 __main() {
-	unset ETCDCTL_USER ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH ETCDCTL_USER_UPGRADE
+	unset ETCDCTL_USER
 	__require_commands
 	if [[ -n "${_provided_binary}" ]]; then
 		test -x "${_provided_binary}"

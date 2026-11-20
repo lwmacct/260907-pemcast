@@ -125,7 +125,7 @@ func writeConfiguration(t *testing.T, root string) string {
 	configuration := fmt.Sprintf(`agent:
   etcds:
     - name: default
-      endpoints: ["http://127.0.0.1:1"]
+      endpoints: http://127.0.0.1:1
       prefix: /pemcast
       dial-timeout: 1s
       request-timeout: 1s
@@ -147,12 +147,12 @@ func writeMultiSourceConfiguration(t *testing.T, bendianRoot, lwmacctRoot string
 	configuration := fmt.Sprintf(`agent:
   etcds:
     - name: bendian
-      endpoints: ["http://127.0.0.1:1"]
+      endpoints: http://127.0.0.1:1
       prefix: /tenants/bendian
       dial-timeout: 1s
       request-timeout: 1s
     - name: lwmacct
-      endpoints: ["http://127.0.0.1:1"]
+      endpoints: http://127.0.0.1:1
       prefix: /tenants/lwmacct
       dial-timeout: 1s
       request-timeout: 1s

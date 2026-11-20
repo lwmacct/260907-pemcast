@@ -13,7 +13,6 @@ __cleanup() {
 }
 
 __main() {
-	unset ETCDCTL_USER_AGENT ETCDCTL_USER_PUBLISH
 	(cd "${_repo_root}" && go build -o "${_binary}" ./cmd/pemcast)
 
 	docker rm -f "${_container}" >/dev/null 2>&1 || true
@@ -77,13 +76,12 @@ __main() {
 	_generation_b="$(jq -er .generation "${_work_dir}/pack-b/metadata.json")"
 	_bundle_key_b="$(jq -er '.["bundle-key"]' "${_work_dir}/pack-b/metadata.json")"
 	_active_key="$(jq -er '.["active-key"]' "${_work_dir}/pack-a/metadata.json")"
-	_endpoints_json="$(jq -Rn --arg endpoint "${_endpoint}" '[$endpoint]')"
 
 	cat >"${_work_dir}/agent.yaml" <<YAML
 agent:
   etcds:
     - name: default
-      endpoints: ${_endpoints_json}
+      endpoints: ${_endpoint}
       prefix: /pemcast
       user: agent-integration:agent-integration-password
       management-user: publisher-integration:publisher-integration-password
@@ -111,7 +109,8 @@ YAML
 	test "$(readlink "${_work_dir}/tls/current")" = \
 		".pemcast/releases/sha256-${_generation_a#sha256-}"
 
-	"${_binary}" --config "${_work_dir}/agent.yaml" publish --pack-dir "${_work_dir}/pack-a"
+	"${_binary}" --config "${_work_dir}/agent.yaml" publish \
+		--etcd-name default --pack-dir "${_work_dir}/pack-a"
 	test "$(etcdctl get "${_active_key}" --print-value-only)" = "${_generation_a}"
 
 	"${_binary}" --config "${_work_dir}/agent.yaml" agent --once \
@@ -121,12 +120,14 @@ YAML
 	test "$(jq -er '.targets[0].current.status' "${_work_dir}/seeded-status.json")" = "active"
 	test "$(jq -er '.targets[0].current["local-digest"]' "${_work_dir}/seeded-status.json")" = "${_generation_a#sha256-}"
 
-	"${_binary}" --config "${_work_dir}/agent.yaml" publish --pack-dir "${_work_dir}/pack-a"
+	"${_binary}" --config "${_work_dir}/agent.yaml" publish \
+		--etcd-name default --pack-dir "${_work_dir}/pack-a"
 
 	_mod_revision_a="$(
 		etcdctl get "${_active_key}" -w json | jq -er '.kvs[0].mod_revision'
 	)"
-	"${_binary}" --config "${_work_dir}/agent.yaml" publish --pack-dir "${_work_dir}/pack-b"
+	"${_binary}" --config "${_work_dir}/agent.yaml" publish \
+		--etcd-name default --pack-dir "${_work_dir}/pack-b"
 	test "$(etcdctl get "${_active_key}" --print-value-only)" = "${_generation_b}"
 
 	_stale_txn="${_work_dir}/stale.txn"
@@ -142,14 +143,16 @@ YAML
 	test "$(sed -n '1p' "${_work_dir}/stale-result.txt")" = FAILURE
 
 	etcdctl put "${_bundle_key_b}" corrupt >/dev/null
-	if "${_binary}" --config "${_work_dir}/agent.yaml" publish --pack-dir "${_work_dir}/pack-b" \
+	if "${_binary}" --config "${_work_dir}/agent.yaml" publish \
+		--etcd-name default --pack-dir "${_work_dir}/pack-b" \
 		>"${_work_dir}/mismatch-result.txt" 2>&1; then
 		printf '%s\n' 'publish unexpectedly accepted a corrupt existing bundle' >&2
 		return 1
 	fi
 	grep -q 'different bytes' "${_work_dir}/mismatch-result.txt"
 	etcdctl del "${_bundle_key_b}" >/dev/null
-	"${_binary}" --config "${_work_dir}/agent.yaml" publish --pack-dir "${_work_dir}/pack-b"
+	"${_binary}" --config "${_work_dir}/agent.yaml" publish \
+		--etcd-name default --pack-dir "${_work_dir}/pack-b"
 
 	"${_binary}" --config "${_work_dir}/agent.yaml" agent --once --dry-run \
 		>"${_work_dir}/agent-dry-run.log" 2>&1
@@ -182,7 +185,8 @@ YAML
 		printf '%s\n' 'watch agent logged an expired auth token' >&2
 		return 1
 	fi
-	"${_binary}" --config "${_work_dir}/agent.yaml" publish --pack-dir "${_work_dir}/pack-a" >/dev/null
+	"${_binary}" --config "${_work_dir}/agent.yaml" publish \
+		--etcd-name default --pack-dir "${_work_dir}/pack-a" >/dev/null
 
 	# Wait for watch agent to activate pack-a.
 	_deadline=$((SECONDS + 15))

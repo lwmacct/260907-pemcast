@@ -29,7 +29,7 @@ func statusConfig(t *testing.T) (config.Config, string) {
 		}},
 	}}
 	cfg.Agent.Etcds = []config.Source{{
-		Name: "default", Prefix: "/pemcast", Endpoints: []string{"http://127.0.0.1:1"},
+		Name: "default", Prefix: "/pemcast", Endpoints: "http://127.0.0.1:1",
 		DialTimeout: time.Second, RequestTimeout: time.Second,
 	}}
 	return cfg, outputRoot

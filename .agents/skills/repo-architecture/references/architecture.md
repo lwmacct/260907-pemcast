@@ -12,7 +12,7 @@ pemcast 是一个 pull-only certificate agent 与 staged publisher. `pemcast too
 
 启动时校验配置. 非 dry-run agent 按排序获取每个 output root 的排他文件锁. 单 tenant 配置构造一个 etcd client; `agent.etcds[]` 配置为每个 tenant 构造独立 etcd client, snapshot/watch session 与 reconcile controller, 并在同一个进程中并发运行. 所有 controller 共享全局 `agent.max-concurrent` 信号量. dry-run 不获取 output root 锁.
 
-publish, upgrade 与 prune 是单 etcd 管理命令. 它们从同一个 `agent.etcds[]` 数组选择连接: 未显式指定时优先选择 `name: default`, 否则选择第一个 entry. `user` 仅供 agent watcher 使用, `management-user` 供管理命令使用, 后者为空时保留命令特定环境凭据 fallback.
+publish, upgrade 与 prune 是单 etcd 管理命令. 它们通过必填 `--etcd-name` 从同一个 `agent.etcds[]` 数组选择连接. `user` 仅供 agent watcher 使用, `management-user` 供管理命令使用. 默认 source 的 endpoints 与两类凭据由 cfgm 展开 `${ETCDCTL_ENDPOINTS}` 与 `${ETCDCTL_USER}`.
 
 `agent --once` 一次 range read 读取 active prefix 下全部 pointer, 得到同一个 revision 的 snapshot, 然后 reconcile 配置 target 的交集. 普通 agent 循环执行:
 

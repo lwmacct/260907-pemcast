@@ -24,6 +24,16 @@ func TestPublishCommandRejectsMissingPack(t *testing.T) {
 	require.ErrorContains(t, err, "read pack metadata")
 }
 
+func TestPublishCommandRequiresEtcdName(t *testing.T) {
+	application := &cli.Command{Name: "pemcast", Commands: []*cli.Command{Command}}
+	appconfig.Manager.MustConfigure(application)
+
+	err := application.Run(t.Context(), []string{
+		"pemcast", "publish", "--pack-dir", filepath.Join(t.TempDir(), "pack"),
+	})
+	require.ErrorContains(t, err, "agent etcd name is required")
+}
+
 func TestPublishCommandRejectsPrefixMismatch(t *testing.T) {
 	certificatePath, privateKeyPath := writeKeyPair(t, "cli-publish")
 	packDir := filepath.Join(t.TempDir(), "pack")
@@ -48,7 +58,7 @@ func runCommand(t *testing.T, packDir, etcdPrefix string) error {
 	configuration := `agent:
   etcds:
     - name: default
-      endpoints: ["http://127.0.0.1:1"]
+      endpoints: http://127.0.0.1:1
       prefix: /pemcast
       dial-timeout: 1s
       request-timeout: 1s
@@ -60,7 +70,10 @@ func runCommand(t *testing.T, packDir, etcdPrefix string) error {
 		Commands: []*cli.Command{Command},
 	}
 	appconfig.Manager.MustConfigure(application)
-	arguments := []string{"pemcast", "--config", configurationPath, "publish", "--pack-dir", packDir}
+	arguments := []string{
+		"pemcast", "--config", configurationPath, "publish",
+		"--etcd-name", "default", "--pack-dir", packDir,
+	}
 	return application.Run(t.Context(), arguments)
 }
 

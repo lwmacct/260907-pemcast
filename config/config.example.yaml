@@ -11,11 +11,8 @@ agent:
   etcds:
     - name: "default" # unique agent-local etcd name
       prefix: "/pemcast" # etcd namespace prefix placed before /v6
-
-      # etcd endpoint URLs
-      endpoints:
-        - http://127.0.0.1:2379
-      user: "" # etcd authentication as username:password; empty disables authentication
+      endpoints: "${ETCDCTL_ENDPOINTS:?ETCDCTL_ENDPOINTS is required}" # comma-separated etcd endpoint URLs
+      user: "${ETCDCTL_USER:-}" # agent authentication as username:password; empty disables authentication
       dial-timeout: 5s # etcd connection timeout
       request-timeout: 10s # timeout for an etcd read
 
@@ -26,7 +23,7 @@ agent:
         key-file: "" # PEM client private key used for etcd mTLS
         server-name: "" # expected etcd TLS server name
         insecure-skip-verify: false # skip etcd TLS server verification (unsafe)
-      management-user: "" # optional username:password for management commands; environment fallback is used when empty
+      management-user: "${ETCDCTL_USER:-}" # management authentication as username:password; empty disables authentication
 
   # etcd watch and retry configuration
   watch:

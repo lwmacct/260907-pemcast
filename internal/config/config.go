@@ -17,6 +17,13 @@ import (
 
 const AppName = "pemcast"
 
+// cfgm expands these standard etcdctl-compatible defaults before the config is
+// decoded. Command-specific credential aliases are deliberately not used.
+const (
+	DefaultEtcdEndpointsTemplate = `${ETCDCTL_ENDPOINTS:?ETCDCTL_ENDPOINTS is required}`
+	DefaultEtcdUserTemplate      = `${ETCDCTL_USER:-}`
+)
+
 // DefaultEtcdPrefix is the default namespace placed before the fixed v6 protocol root.
 const DefaultEtcdPrefix = "/pemcast"
 
@@ -90,25 +97,17 @@ type Etcd struct {
 	TLS            EtcdTLS       `json:"tls"             desc:"etcd TLS client configuration"`
 }
 
-// ManagementConfig returns the same connection settings with the optional
-// management credential substituted for the agent credential.
-func (s Source) ManagementConfig() Etcd {
-	cfg := s.ClientConfig()
-	cfg.User = s.ManagementUser
-	return cfg
-}
-
 // Source names one etcd configuration so targets can select their remote
 // tenant without making the source name part of the remote protocol keys.
 type Source struct {
 	Name           string        `json:"name"            desc:"unique agent-local etcd name"`
 	Prefix         string        `json:"prefix"          desc:"etcd namespace prefix placed before /v6"`
-	Endpoints      []string      `json:"endpoints"       desc:"etcd endpoint URLs"`
-	User           string        `json:"user"            desc:"etcd authentication as username:password; empty disables authentication"`
+	Endpoints      string        `json:"endpoints"       desc:"comma-separated etcd endpoint URLs"`
+	User           string        `json:"user"            desc:"agent authentication as username:password; empty disables authentication"`
 	DialTimeout    time.Duration `json:"dial-timeout"    desc:"etcd connection timeout"`
 	RequestTimeout time.Duration `json:"request-timeout" desc:"timeout for an etcd read"`
 	TLS            EtcdTLS       `json:"tls"             desc:"etcd TLS client configuration"`
-	ManagementUser string        `json:"management-user"  desc:"optional username:password for management commands; environment fallback is used when empty"`
+	ManagementUser string        `json:"management-user"  desc:"management authentication as username:password; empty disables authentication"`
 }
 
 // ClientConfig returns the command-agnostic etcd client fields.
@@ -122,9 +121,17 @@ func (s Source) ClientConfig() Etcd {
 		requestTimeout = DefaultEtcdRequestTimeout
 	}
 	return Etcd{
-		Prefix: s.Prefix, Endpoints: s.Endpoints, User: s.User,
+		Prefix: s.Prefix, Endpoints: SplitEtcdEndpoints(s.Endpoints), User: s.User,
 		DialTimeout: dialTimeout, RequestTimeout: requestTimeout, TLS: s.TLS,
 	}
+}
+
+// ManagementConfig returns the same connection settings with the management
+// credential substituted for the agent credential.
+func (s Source) ManagementConfig() Etcd {
+	cfg := s.ClientConfig()
+	cfg.User = s.ManagementUser
+	return cfg
 }
 
 // EtcdTLS configures server verification and optional client authentication.
@@ -218,6 +225,17 @@ func DefaultConfig() Config {
 	return Config{
 		Agent: Agent{
 			MaxConcurrent: 4,
+			Etcds: []Source{
+				{
+					Name:           "default",
+					Prefix:         DefaultEtcdPrefix,
+					Endpoints:      DefaultEtcdEndpointsTemplate,
+					User:           DefaultEtcdUserTemplate,
+					DialTimeout:    DefaultEtcdDialTimeout,
+					RequestTimeout: DefaultEtcdRequestTimeout,
+					ManagementUser: DefaultEtcdUserTemplate,
+				},
+			},
 			Watch: Watch{
 				ProgressInterval: 30 * time.Second,
 				ProgressTimeout:  2 * time.Minute,
@@ -234,15 +252,6 @@ func DefaultConfig() Config {
 // copying the generated example into a deployment-specific configuration.
 func ExampleConfig() Config {
 	cfg := DefaultConfig()
-	cfg.Agent.Etcds = []Source{
-		{
-			Name:           "default",
-			Prefix:         DefaultEtcdPrefix,
-			Endpoints:      []string{"http://127.0.0.1:2379"},
-			DialTimeout:    5 * time.Second,
-			RequestTimeout: 10 * time.Second,
-		},
-	}
 	cfg.Agent.Targets = []Target{
 		{
 			ID:           "nginx",
@@ -390,19 +399,13 @@ func (a Agent) validateEtcds() (map[string]struct{}, error) {
 	return names, nil
 }
 
-// SelectEtcd returns one configured etcd. An empty name prefers the entry
-// named default and otherwise selects the first configured entry.
+// SelectEtcd returns the one configured etcd selected by its explicit name.
 func (a Agent) SelectEtcd(name string) (Source, error) {
 	if _, err := a.validateEtcds(); err != nil {
 		return Source{}, err
 	}
 	if name == "" {
-		for _, source := range a.Etcds {
-			if source.Name == "default" {
-				return source, nil
-			}
-		}
-		return a.Etcds[0], nil
+		return Source{}, fmt.Errorf("agent etcd name is required")
 	}
 	for _, source := range a.Etcds {
 		if source.Name == name {
@@ -423,6 +426,19 @@ func SplitEtcdUser(value string) (string, string, error) {
 		return "", "", fmt.Errorf("etcd user must be empty or formatted as username:password")
 	}
 	return username, password, nil
+}
+
+// SplitEtcdEndpoints converts the etcdctl-style comma-separated endpoint list
+// into clientv3 endpoints. Empty elements remain present for validation.
+func SplitEtcdEndpoints(value string) []string {
+	if value == "" {
+		return nil
+	}
+	endpoints := strings.Split(value, ",")
+	for index := range endpoints {
+		endpoints[index] = strings.TrimSpace(endpoints[index])
+	}
+	return endpoints
 }
 
 // SourceRuntime is one validated source and the targets that belong to it.
@@ -488,17 +504,6 @@ func ManagerAction(run func(context.Context, *cli.Command, *Config) error) cli.A
 	})
 }
 
-// PublishEtcdUserTemplate is the publish-specific credential fallback.
-const PublishEtcdUserTemplate = `${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}`
-
-// UpgradeEtcdUserTemplate prefers a dedicated migration credential before the
-// broad publisher and generic etcdctl fallbacks.
-const UpgradeEtcdUserTemplate = `${ETCDCTL_USER_UPGRADE:-${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}}`
-
-// PruneEtcdUserTemplate prefers a dedicated lifecycle credential before the
-// broad publisher and generic etcdctl fallbacks.
-const PruneEtcdUserTemplate = `${ETCDCTL_USER_PRUNE:-${ETCDCTL_USER_PUBLISH:-${ETCDCTL_USER:-}}}`
-
 // LoadCommand loads the normal file and environment configuration sources.
 func LoadCommand(ctx context.Context, root *cli.Command) (*Config, error) {
 	sources := make([]cfgm.Source, 0, 2)
@@ -522,11 +527,9 @@ func LoadCommand(ctx context.Context, root *cli.Command) (*Config, error) {
 	return &normalized, nil
 }
 
-// ResolveEtcdCommand loads configuration, selects one agent etcd, and resolves
-// its command-specific management credential only when no file credential is set.
-func ResolveEtcdCommand(
-	ctx context.Context, root *cli.Command, name, etcdUserTemplate string,
-) (Etcd, error) {
+// ResolveEtcdCommand loads configuration and selects one source by its
+// explicit name for a management command.
+func ResolveEtcdCommand(ctx context.Context, root *cli.Command, name string) (Etcd, error) {
 	cfg, err := LoadCommand(ctx, root)
 	if err != nil {
 		return Etcd{}, err
@@ -535,30 +538,5 @@ func ResolveEtcdCommand(
 	if err != nil {
 		return Etcd{}, err
 	}
-	etcd := source.ManagementConfig()
-	if etcd.User == "" {
-		etcd.User, err = ExpandEtcdUser(ctx, etcdUserTemplate)
-	}
-	return etcd, err
-}
-
-type etcdUserConfig struct {
-	User string `json:"user"`
-}
-
-// ExpandEtcdUser uses cfgm template expansion to resolve command-specific
-// ETCDCTL_USER fallbacks. An empty result disables etcd authentication.
-func ExpandEtcdUser(ctx context.Context, templateValue string) (string, error) {
-	manager, err := cfgm.New(
-		etcdUserConfig{User: templateValue},
-		cfgm.WithoutDefaultPaths(),
-	)
-	if err != nil {
-		return "", fmt.Errorf("create etcd user config manager: %w", err)
-	}
-	credentials, err := manager.Load(ctx)
-	if err != nil {
-		return "", fmt.Errorf("expand etcd user template: %w", err)
-	}
-	return credentials.User, nil
+	return source.ManagementConfig(), nil
 }
